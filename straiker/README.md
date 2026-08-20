@@ -3,13 +3,21 @@
 Straiker Defend guardrails for [agentgateway](https://agentgateway.dev) (the Linux Foundation AI-native proxy,
 ex-Solo.io) — coding agents, MCP, and agentic/chatbot traffic, enforced in-path.
 
-**Status:** working end-to-end locally against the Straiker demo tenant (app `AgentGateway`). Shared
-instance: `your gateway host` (App Runner). Pinned to `ghcr.io/agentgateway/agentgateway:v1.4.1`.
+**Status:** verified end-to-end against Straiker (coding agents, MCP, agentic). Runs the **forked
+agentgateway binary built from this repository** (base `v1.4.1` plus the native Straiker guard), not the
+stock upstream image.
 
 ## What it is
 
-agentgateway has no WASM/Lua/plugin API — policies are compiled into the Rust binary. What it has are
-**external in-path seams**, and we use three of them from ONE sidecar process:
+Two integration layers, used together:
+
+1. **Native `straiker` guard (compiled in).** This fork adds Straiker as a first-class guardrail kind
+   (`crates/agentgateway/src/llm/policy/straiker.rs` + UI). In the AgentGateway console, Guardrails →
+   Add guard → **Straiker**: paste a Straiker Defend application key and every guarded prompt/response is
+   scored inline. This covers the chatbot/agentic LLM surface with zero sidecar involvement.
+2. **Sidecar seams (for the surfaces the guard API cannot carry).** agentgateway has no WASM/Lua/plugin
+   API — policies are compiled into the Rust binary. What it has are **external in-path seams**, and we
+   use three of them from ONE sidecar process:
 
 | Seam | Transport | Carries | Straiker contract | Can block |
 |---|---|---|---|---|
@@ -26,21 +34,39 @@ Why one container: App Runner is HTTP/1.1-only with no gRPC ingress; gRPC stays 
 ```
 straiker_sidecar/   Python 3.12 — app.py (HTTP webhook seam) · extproc.py · extmcp.py · detect_client.py · wire.py · blocking.py · config.py
 gateway/            Dockerfile (agentgateway binary + sidecar) · entrypoint.sh · config/agentgateway.yaml (PoV reference, validated) · VERSION
-deploy/apprunner/   deploy.sh · setup_domain.sh      (forked from )
+deploy/apprunner/   deploy.sh · setup_domain.sh      (AWS App Runner reference deployment)
 spec/               extproc_replay.py (gRPC replay of real Claude Code captures) · mock_detect.py · qa.py · parity_check.py
 lab/                tasks_server.py (MCP demo target) · live runners
 docs/               seams, latency, customer setup, engineering handoff
 ```
 
 ## Quickstart (local)
+
+The gateway image is built in two steps: first the forked agentgateway binary (repository root, long Rust
+build the first time), then the runtime image that layers the Straiker sidecar on top of it.
+
 ```bash
-set -a; source "Straiker Projects/.env"; set +a          # STRAIKER_AGENTGATEWAY_KEY, ANTHROPIC_KEY
-docker build -f gateway/Dockerfile -t straiker-agentgateway:local .
-docker run -d --name agw -p 3000:3000 -p 3001:3001 -e STRAIKER_AGENTGATEWAY_KEY -e STRAIKER_MODE=block straiker-agentgateway:local
+# 1. Build the forked agentgateway (from the REPOSITORY ROOT — native Straiker guard + UI, both default)
+docker build -t straiker-agentgateway-fork:local .
+
+# 2. Build the runtime image (from this straiker/ directory)
+cd straiker
+cp .env.example .env      # fill in STRAIKER_AGENTGATEWAY_KEY (your Straiker Defend application key)
+set -a; source .env; set +a
+docker build -f gateway/Dockerfile --build-arg AGW_BASE=straiker-agentgateway-fork:local \
+  -t straiker-agentgateway:local .
+
+# 3. Run it
+docker run -d --name agw -p 3000:3000 -p 3001:3001 \
+  -e STRAIKER_AGENTGATEWAY_KEY -e STRAIKER_MODE=block straiker-agentgateway:local
+
 # Claude Code through it:
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3000 ANTHROPIC_CUSTOM_HEADERS="apikey: dev-key-1"
 claude -p "reply with exactly: AGW-OK"
 ```
+
+`dev-key-1` is the reference consumer key shipped in `gateway/config/agentgateway.yaml`; replace the key
+list with your own before exposing the gateway anywhere.
 
 ## Contract notes
 * **Day-1 `x-tool` is `kong-claude-code`** (prod accepts it; `agentgateway-claude-code` is not yet registered in
