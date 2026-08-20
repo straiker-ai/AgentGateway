@@ -307,7 +307,9 @@ class StraikerExtProc(pbg.ExternalProcessorServicer):
         """Synthesize Claude Code hook events from an OpenAI-dialect coding turn and post them on the
         native contract (x-tool: claude-code). Enforce on the tool events: a blocked PreToolUse
         replaces the response so the client never receives an executable tool call."""
-        resp_json = wire.parse_json(raw) or {}
+        resp_json = coding_synth.decode_response(raw, ex.fmt)
+        if not resp_json:
+            log.warning("edge: undecodable response (%d bytes, prefix %r) session=%s", len(raw), raw[:48], ex.session_id)
         events = coding_synth.synth_events(ex.req_json, resp_json, ex.fmt, ex.session_id or "", ex.user, ex.model)
         if not events:
             return _continue_resp_body()

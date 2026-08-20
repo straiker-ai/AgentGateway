@@ -153,3 +153,90 @@ def synth_events(req_json: dict, resp_json: dict | None, fmt: str, session_id: s
         if user and "user_name" not in e:
             e["user_name"] = user
     return events
+
+
+# ---- robust response decoding (gzip + SSE) so the response tool calls are always recovered --------
+
+def _reassemble_chat_sse(text: str) -> dict:
+    """OpenAI Chat Completions SSE -> a single response dict (content + tool_calls)."""
+    content, calls = [], {}
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload in ("[DONE]", ""):
+            continue
+        try:
+            d = json.loads(payload)
+        except ValueError:
+            continue
+        for ch in d.get("choices") or []:
+            delta = (ch or {}).get("delta") or {}
+            if isinstance(delta.get("content"), str):
+                content.append(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                slot = calls.setdefault(idx, {"id": tc.get("id"), "name": None, "args": ""})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if isinstance(fn.get("arguments"), str):
+                    slot["args"] += fn["arguments"]
+    tool_calls = [{"id": s["id"], "type": "function", "function": {"name": s["name"], "arguments": s["args"]}}
+                  for _, s in sorted(calls.items())]
+    msg = {"role": "assistant", "content": "".join(content) or None}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    return {"choices": [{"message": msg}]}
+
+
+def _reassemble_responses_sse(text: str) -> dict:
+    """OpenAI Responses SSE -> a single response dict (output items)."""
+    items: dict = {}
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload in ("[DONE]", ""):
+            continue
+        try:
+            d = json.loads(payload)
+        except ValueError:
+            continue
+        item = d.get("item") or {}
+        if item.get("type") == "function_call":
+            key = item.get("id") or item.get("call_id")
+            slot = items.setdefault(key, {"type": "function_call", "call_id": item.get("call_id") or key,
+                                          "name": item.get("name"), "arguments": item.get("arguments") or ""})
+            if item.get("name"):
+                slot["name"] = item["name"]
+        if d.get("type") == "response.function_call_arguments.delta":
+            key = d.get("item_id")
+            if key in items and isinstance(d.get("delta"), str):
+                items[key]["arguments"] += d["delta"]
+    return {"output": list(items.values())}
+
+
+def decode_response(raw: bytes, fmt: str) -> dict:
+    """Recover a response dict from raw bytes: gunzip if needed, then JSON or SSE reassembly."""
+    data = raw
+    if data[:2] == b"\x1f\x8b":  # gzip magic
+        import gzip
+        try:
+            data = gzip.decompress(data)
+        except OSError:
+            pass
+    try:
+        obj = json.loads(data)
+        if isinstance(obj, dict):
+            return obj
+    except (ValueError, TypeError):
+        pass
+    text = data.decode("utf-8", "replace")
+    if "data:" in text:
+        return _reassemble_responses_sse(text) if fmt == "openai-responses" else _reassemble_chat_sse(text)
+    return {}

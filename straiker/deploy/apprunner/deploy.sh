@@ -50,6 +50,7 @@ env = {
   "AGW_HTPASSWD_B64": os.environ.get("HTPASSWD_B64_ENV", ""),
   "AGENTGATEWAY_VERSION": os.environ.get("AGW_VERSION_ENV", ""),
   "STRAIKER_AGENTGATEWAY_KEY": os.environ["STRAIKER_AGENTGATEWAY_KEY"],
+  "STRAIKER_AGENTGATEWAY_CODING_KEY": os.environ.get("STRAIKER_AGENTGATEWAY_CODING_KEY", ""),
   "STRAIKER_X_TOOL": os.environ.get("STRAIKER_X_TOOL", "kong-claude-code"),
   "STRAIKER_MODE": os.environ.get("STRAIKER_MODE", "block"),
   "STRAIKER_FAIL_OPEN": "true",
