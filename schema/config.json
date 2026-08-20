@@ -4929,6 +4929,18 @@
           "required": [
             "azureContentSafety"
           ]
+        },
+        {
+          "description": "Use Straiker DefendAI runtime guardrails to evaluate the prompt.",
+          "type": "object",
+          "properties": {
+            "straiker": {
+              "$ref": "#/$defs/Straiker"
+            }
+          },
+          "required": [
+            "straiker"
+          ]
         }
       ]
     },
@@ -5325,6 +5337,50 @@
       },
       "additionalProperties": false
     },
+    "Straiker": {
+      "description": "Configuration for the Straiker DefendAI guardrail.\n\nScores prompts and completions against the tenant's Straiker runtime guardrail policy\nby calling the Straiker Detect API directly. The `api_key` selects the tenant + app, so a\ncustomer configures this guard entirely in the UI by pasting their own Straiker key.",
+      "type": "object",
+      "properties": {
+        "apiKey": {
+          "description": "Straiker Defend application key (sent as a Bearer token). Selects the tenant and app.",
+          "type": "string"
+        },
+        "baseUrl": {
+          "description": "Straiker API base URL. Defaults to `https://api.prod.straiker.ai`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Application name for Console auto-enumeration (`metadata.source`). A request\n`x-straiker-source` header overrides this per call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failureMode": {
+          "description": "Behaviour when Straiker is unreachable. Defaults to `failOpen` so a guardrail\noutage never takes down live traffic.",
+          "$ref": "#/$defs/WebhookFailureMode",
+          "default": "failOpen"
+        },
+        "policies": {
+          "description": "Backend policies used when calling Straiker (TLS, etc.).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SimpleLocalBackendPolicies"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "apiKey"
+      ]
+    },
     "ResponseGuard": {
       "type": "object",
       "properties": {
@@ -5397,6 +5453,18 @@
           },
           "required": [
             "azureContentSafety"
+          ]
+        },
+        {
+          "description": "Use Straiker DefendAI runtime guardrails to evaluate the response.",
+          "type": "object",
+          "properties": {
+            "straiker": {
+              "$ref": "#/$defs/Straiker"
+            }
+          },
+          "required": [
+            "straiker"
           ]
         }
       ]
