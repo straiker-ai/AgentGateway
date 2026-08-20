@@ -40,3 +40,8 @@ cfg.yaml
 *.db
 .beads-credential-key
 .beads/proxieddb/
+straiker/deploy/agent-keys.env
+straiker/deploy/htpasswd
+straiker/**/__pycache__/
+**/agent-keys.env
+**/htpasswd
