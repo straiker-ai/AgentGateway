@@ -8,7 +8,7 @@
 // agentic trace. `action == "block"` becomes the guard's configured rejection.
 use agent_core::strng;
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::json;
 use crate::llm::RequestType;
