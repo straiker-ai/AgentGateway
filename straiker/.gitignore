@@ -1,0 +1,16 @@
+# secrets — never commit
+agent-keys.env
+deploy/agent-keys.env
+*.env
+!*.env.example
+secrets/
+# local/runtime
+__pycache__/
+*.pyc
+.venv/
+out/
+*.log
+spec/out/
+lab/out/
+.DS_Store
+deploy/htpasswd

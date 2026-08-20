@@ -98,12 +98,10 @@ fn user_name(h: &::http::HeaderMap) -> Option<String> {
 }
 
 fn ai_context(h: &::http::HeaderMap) -> serde_json::Value {
-	serde_json::json!({
-		"llm_format": "openai",
-		"route_type": "chat",
-		"genai_category": "chat",
-		"model": hdr(h, "x-straiker-model"),
-	})
+	// Only forward what we actually know. The guard sees normalized messages, not the upstream
+	// route, so asserting a specific wire format here (e.g. "openai") would be wrong for Anthropic/
+	// Bedrock/Gemini routes; let the backend infer it. `model` is forwarded when the route sets it.
+	serde_json::json!({ "genai_category": "chat", "model": hdr(h, "x-straiker-model") })
 }
 
 fn last_user_text(messages: &[serde_json::Value]) -> String {
@@ -191,6 +189,8 @@ pub(super) async fn send_response(
 		.map(|c| serde_json::json!({"message": {"role": c.message.role.as_str(), "content": c.message.content.as_str()}}))
 		.collect_vec();
 	let sess = session_id(http_headers, &answer);
+	// A response guard only sees the completion (choices), not the originating request, so the
+	// request block is empty here; the backend pairs this post_call with its pre_call by session.
 	let payload = serde_json::json!({
 		"eventType": "post_call",
 		"request": {"body": {"messages": []}, "text": ""},
@@ -205,4 +205,84 @@ pub(super) async fn send_response(
 		"aiContext": ai_context(http_headers),
 	});
 	post(client, s, payload).await
+}
+
+#[cfg(test)]
+mod tests {
+	use ::http::{HeaderMap, HeaderName, HeaderValue};
+	use agent_core::strng;
+
+	use super::*;
+	use crate::llm::policy::{FailureMode, Straiker};
+
+	fn hdrs(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
+		let mut h = HeaderMap::new();
+		for (k, v) in pairs {
+			h.insert(HeaderName::from_static(k), HeaderValue::from_static(v));
+		}
+		h
+	}
+
+	fn guard(base: Option<&'static str>) -> Straiker {
+		Straiker {
+			api_key: strng::literal!("test-key"),
+			base_url: base.map(|b| strng::new(b)),
+			source: None,
+			failure_mode: FailureMode::FailOpen,
+			policies: vec![],
+		}
+	}
+
+	#[test]
+	fn is_block_matches_only_block() {
+		let mut v = StraikerVerdict::default();
+		assert!(!v.is_block());
+		v.action = Some("allow".into());
+		assert!(!v.is_block());
+		v.action = Some("BLOCK".into());
+		assert!(v.is_block());
+	}
+
+	#[test]
+	fn verdict_deserializes_and_ignores_extra_fields() {
+		let v: StraikerVerdict =
+			serde_json::from_str(r#"{"action":"block","score":0.97,"unknown":"x"}"#).unwrap();
+		assert!(v.is_block());
+		assert_eq!(v.score, Some(0.97));
+	}
+
+	#[test]
+	fn base_url_defaults_and_trims_trailing_slash() {
+		assert_eq!(base_url(&guard(None)), format!("{DEFAULT_BASE_URL}/api/v1/detect/webhook"));
+		assert_eq!(
+			base_url(&guard(Some("https://tenant.example.com/"))),
+			"https://tenant.example.com/api/v1/detect/webhook"
+		);
+	}
+
+	#[test]
+	fn session_id_priority_header_then_traceparent_then_hash() {
+		// explicit session header wins
+		assert_eq!(session_id(&hdrs(&[("x-straiker-session", "S1")]), "seed"), "S1");
+		// else the traceparent trace-id (stable across a turn's request + response guards)
+		let tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+		assert_eq!(
+			session_id(&hdrs(&[("traceparent", tp)]), "seed"),
+			"agw-0af7651916cd43dd8448eb211c80319c"
+		);
+		// else a stable content hash; same seed -> same id
+		assert_eq!(session_id(&HeaderMap::new(), "seed"), session_id(&HeaderMap::new(), "seed"));
+	}
+
+	#[test]
+	fn last_user_text_picks_the_latest_user_message() {
+		let msgs = vec![
+			serde_json::json!({"role": "system", "content": "sys"}),
+			serde_json::json!({"role": "user", "content": "first"}),
+			serde_json::json!({"role": "assistant", "content": "reply"}),
+			serde_json::json!({"role": "user", "content": "second"}),
+		];
+		assert_eq!(last_user_text(&msgs), "second");
+		assert_eq!(last_user_text(&[]), "");
+	}
 }

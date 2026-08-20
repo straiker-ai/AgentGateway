@@ -1,0 +1,8 @@
+.venv/
+.git/
+**/__pycache__/
+*.log
+spec/out/
+lab/out/
+*.env
+secrets/

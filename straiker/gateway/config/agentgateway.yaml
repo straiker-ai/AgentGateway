@@ -1,0 +1,239 @@
+# =====================================================================================
+# Straiker x agentgateway — PoV reference config.   PIN: ghcr.io/agentgateway/agentgateway:v1.4.1
+# Every field checked against schema/config.json at tag v1.4.1; `agentgateway --validate-only`
+# is a promote.sh gate. If you are on v1.3.x run `agentgateway migrate` first (schema churned).
+#
+# Three Straiker seams, one sidecar process on loopback:
+#   ExtProc  127.0.0.1:9000  gRPC  -> coding agents (verbatim relay; central-parse; can BLOCK)
+#   ExtMCP   127.0.0.1:9001  gRPC  -> MCP tools/call + results (can BLOCK with JSON-RPC -32001)
+#   Webhook  127.0.0.1:8080  HTTP  -> agentic/chatbot surface: sidecar maps to /detect/webhook
+#                                     (kong-gateway; SAME as litellm/portkey) -> one card, input+output.
+# =====================================================================================
+config:
+  # App Runner (and most container runtimes) health-check over IPv4; agentgateway binds [::] (IPv6)
+  # by default, which the App Runner sandbox does not reach -> CREATE_FAILED with no app logs.
+  # Disabling IPv6 makes it bind 0.0.0.0. (Kong sets KONG_PROXY_LISTEN=0.0.0.0 for the same reason.)
+  enableIpv6: false
+  adminAddr: "127.0.0.1:15000"
+
+gateways:
+  default:
+    port: 3000
+
+# ---------------------------------------------------------------------------------
+# ACCESS: one apiKey per person. metadata.user is CEL-visible and becomes x-straiker-user,
+# so the Console shows the real developer, not "agentgateway-user". The `&keys` anchor on the
+# first route is reused by every route; deploy.sh substitutes the real key list at deploy time.
+# ---------------------------------------------------------------------------------
+routes:
+# ---- Clean public landing at / (no auth) so a browser shows a branded page, not an auth error
+- name: landing
+  matches:
+  - path: { exact: / }
+  policies:
+    urlRewrite: { path: { full: /landing } }
+  backends:
+  - host: "127.0.0.1:8080"
+# ---- Claude Code  (ANTHROPIC_BASE_URL=https://<gw>)  — raw relay to Anthropic, client keeps its own key
+- name: claude-code
+  matches:
+  - path: { pathPrefix: /v1/messages }
+  policies:
+    requestHeaderModifier: &ident               # identity on the wire: real developer, not a generic user
+      set:
+        x-straiker-user: '{{ apiKey.user }}'
+    apiKey: &keys
+      mode: strict
+      location: { header: { name: apikey } }     # Claude Code: ANTHROPIC_CUSTOM_HEADERS="apikey: <key>"
+      keys:
+      - key: dev-key-1
+        metadata: { user: dev@example.com, team: se, app: dev@example.com, straiker_app: "" }
+    extProc: &extproc_buffered
+      host: "127.0.0.1:9000"                     # Straiker sidecar ExtProc (h2c, loopback)
+      failureMode: failOpen                      # guardrail outage must not take down dev sessions
+      processingOptions:
+        requestBodyMode: buffered                # score BEFORE upstream
+        responseBodyMode: buffered               # buffered = ENFORCEABLE (tool_use adjudicated before the client sees it)
+      requestAttributes:
+        x-straiker-user: 'apiKey.user'
+        x-straiker-app: 'apiKey.straiker_app'    # per-consumer Straiker key selector (customer's own tenant/app)
+        x-straiker-mode: '"coding"'              # coding-agent hook contract (x-tool). default is agentic.
+  backends:
+  - host: api.anthropic.com:443
+    policies:
+      backendTLS: { hostname: api.anthropic.com }
+
+# ---- Claude Code, STREAMING preset (ANTHROPIC_BASE_URL=https://<gw>/streaming) — TTFT preserved, monitor-only
+- name: claude-code-streaming
+  matches:
+  - path: { pathPrefix: /streaming/v1/messages }
+  policies:
+    apiKey: *keys
+    urlRewrite: { path: { prefix: /v1/messages } }
+    extProc: &extproc_streaming
+      host: "127.0.0.1:9000"
+      failureMode: failOpen
+      processingOptions:
+        requestBodyMode: buffered
+        responseBodyMode: fullDuplexStreamed     # tokens stream through; response scored async (monitor-only)
+      requestAttributes:
+        x-straiker-user: 'apiKey.user'
+        x-straiker-app: 'apiKey.straiker_app'
+        x-straiker-mode: '"coding"'
+  backends:
+  - host: api.anthropic.com:443
+    policies:
+      backendTLS: { hostname: api.anthropic.com }
+
+# ---- Codex (OpenAI Responses)      OPENAI_BASE_URL=https://<gw>/codex/v1
+- name: codex
+  matches:
+  - path: { pathPrefix: /codex/v1/ }
+  policies:
+    apiKey: *keys
+    urlRewrite: { path: { prefix: /v1/ } }
+    extProc: *extproc_buffered
+  backends:
+  - host: api.openai.com:443
+    policies:
+      backendTLS: { hostname: api.openai.com }
+
+# ---- Cursor / OpenCode / Copilot (OpenAI Chat Completions)   <tool>/v1/chat/completions
+- name: cursor
+  matches: [ { path: { pathPrefix: /cursor/v1/ } } ]
+  policies: { apiKey: *keys, urlRewrite: { path: { prefix: /v1/ } }, extProc: *extproc_buffered }
+  backends: [ { host: api.openai.com:443, policies: { backendTLS: { hostname: api.openai.com } } } ]
+- name: opencode
+  matches: [ { path: { pathPrefix: /opencode/v1/ } } ]
+  policies: { apiKey: *keys, urlRewrite: { path: { prefix: /v1/ } }, extProc: *extproc_buffered }
+  backends: [ { host: api.openai.com:443, policies: { backendTLS: { hostname: api.openai.com } } } ]
+- name: copilot
+  matches: [ { path: { pathPrefix: /copilot/v1/ } } ]
+  policies: { apiKey: *keys, urlRewrite: { path: { prefix: /v1/ } }, extProc: *extproc_buffered }
+  backends: [ { host: api.openai.com:443, policies: { backendTLS: { hostname: api.openai.com } } } ]
+
+# ---- MCP: agentgateway fronts MCP servers on /mcp; every tools/call -> Straiker ExtMCP first
+- name: mcp
+  matches:
+  - path: { pathPrefix: /mcp }
+  policies:
+    apiKey: *keys
+    mcpGuardrails:
+      processors:
+      - kind: remote
+        host: "127.0.0.1:9001"
+        failureMode: failOpen
+        metadata:
+          user: 'apiKey.user'
+          straiker_app: 'apiKey.straiker_app'
+        methods:
+          tools/call: full                       # request (PreToolUse, enforceable) + response (PostToolUse, IPI)
+          tools/list: response
+  backends:
+  - mcp:
+      targets:
+      - name: tasks
+        stdio:
+          cmd: python3
+          args: ["/srv/tasks_server.py"]
+
+# ---------------------------------------------------------------------------------
+# AGENTIC / CHATBOT surface: agentgateway's LLM API (/v1/chat/completions, /v1/responses) -> Straiker
+# via the guardrail Webhook (SHOWN on the 'LLM Guardrails' page). The sidecar posts the kong-gateway
+# webhook contract — the SAME one litellm/portkey use — pairing pre_call(input) + post_call(output)
+# into ONE Console card; metadata.source auto-enumerates the app (agentic, type AI).
+# Use for GCP Vertex/Gemini, OpenAI/ChatGPT-style apps, Databricks, custom + productivity agents.
+# Served on the SAME port as the coding routes (App Runner exposes one port): explicit routes win for
+# /v1/messages (raw Claude relay); the LLM API serves /v1/chat/completions, /v1/responses, /v1/models.
+# ---------------------------------------------------------------------------------
+llm:
+  gateways: default
+  # provider keys: a dollar-prefixed name is env-interpolated by agentgateway at load (documented form).
+  # surface holds the LLM credential (unlike the coding routes, where the client keeps its own key).
+  models:
+  # --- Anthropic direct
+  - name: "claude-*"
+    provider: anthropic
+    params: { apiKey: "$ANTHROPIC_API_KEY" }
+  # --- OpenAI / ChatGPT platform
+  - name: "gpt-*"
+    provider: openAI
+    params: { apiKey: "$OPENAI_API_KEY" }
+  # --- AWS Bedrock (Claude on Bedrock). SigV4 from AWS_* env creds; region via params.
+  - name: "anthropic.*"
+    provider: bedrock
+    params: { awsRegion: "us-east-1" }
+  - name: "us.anthropic.*"
+    provider: bedrock
+    params: { awsRegion: "us-east-1" }
+  # --- GCP Vertex AI (Gemini) — the customer's primary. Project+region on params; ADC/SA at the backend.
+  - name: "gemini-*"
+    provider: vertex
+    params: { vertexProject: "$VERTEX_PROJECT", vertexRegion: "us-central1" }
+  # --- Google AI Studio Gemini (fallback if Vertex billing is off)
+  - name: "aistudio/*"
+    provider: gemini
+    params: { apiKey: "$GEMINI_API_KEY", model: "gemini-2.0-flash" }
+  # --- Azure AI Foundry (deployments: gpt-4.1, DeepSeek-V3, Mistral-Large-3, grok-3, Phi-4)
+  # Match distinctive Foundry deployment names (no collision with gpt-*/claude-*/gemini-*).
+  # gpt-4.1 on Foundry collides with OpenAI gpt-* — reach it via a dedicated route or alias if needed.
+  - name: "grok-*"
+    provider: azure
+    params: &azure_params
+      apiKey: "$AZURE_OPENAI_API_KEY"
+      azureResourceName: "$AZURE_RESOURCE_NAME"
+      azureResourceType: "openAI"
+      azureApiVersion: "$AZURE_OPENAI_API_VERSION"
+  - name: "Mistral-*"
+    provider: azure
+    params: *azure_params
+  - name: "DeepSeek-*"
+    provider: azure
+    params: *azure_params
+  - name: "Phi-*"
+    provider: azure
+    params: *azure_params
+  # --- Databricks model serving (OpenAI-compatible /serving-endpoints/<name>/invocations)
+  - name: "databricks-*"
+    provider:
+      custom:
+        formats: [ { type: completions } ]
+    params:
+      baseUrl: "$DATABRICKS_HOST/serving-endpoints"
+      apiKey: "$DATABRICKS_TOKEN"
+  policies:
+    apiKey: *keys
+    # NATIVE Straiker guard — first-class, shown on the "LLM Guardrails" page as "Straiker" (with the
+    # logo), exactly like Bedrock Guardrails / Model Armor. The guard calls Straiker's Detect API
+    # directly (kong-gateway webhook contract; pre_call input + post_call output paired by session into
+    # one Console card). A customer can add/edit this in the UI and paste their OWN tenant's Straiker
+    # key. The default key below is the shared demo tenant. (Coding agents = ExtProc, separate key.)
+    guardrails:
+      streaming: Enabled                         # reject-only text window; fine for chat
+      request:
+      - straiker:
+          apiKey: "$STRAIKER_AGENTGATEWAY_KEY"
+          failureMode: failOpen
+        rejection: { body: "Blocked by Straiker guardrails.", status: 403 }
+      response:
+      - straiker:
+          apiKey: "$STRAIKER_AGENTGATEWAY_KEY"
+          failureMode: failOpen
+        rejection: { body: "Blocked by Straiker guardrails.", status: 403 }
+
+# ---------------------------------------------------------------------------------
+# UI / playground — served on the default gateway at /ui, apiKey-gated so only holders of a
+# gateway key can reach it. Lets a customer self-serve test requests in a browser.
+# NOTE: the UI renders the running config. Keys in this file appear there. For a shared
+# instance, mint consumer keys as `keyHash` (sha256) instead of plaintext `key` so the UI
+# cannot reveal them, or give the customer a dedicated deploy. (deploy/render_config.py can
+# emit hashed keys — see docs/CUSTOMER-ACCESS.md.)
+ui:
+  gateways: default
+  policies:
+    # browser access: native username/password prompt. htpasswd materialized by the entrypoint from
+    # AGW_HTPASSWD_B64 (avoids env-interpolation of the bcrypt $ signs). Default user: straiker.
+    basicAuth:
+      mode: strict
+      realm: "Straiker agentgateway"
+      htpasswd: { file: /tmp/agw/htpasswd }

@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Straiker AI Security Gateway</title><style>
+*{box-sizing:border-box;margin:0;padding:0}body{background:#08090C;color:#E8EAED;font:15px/1.6 -apple-system,Inter,Segoe UI,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{max-width:640px;padding:48px 44px;background:#0E1014;border:1px solid #1C1F26;border-radius:16px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#FF5378;border:1px solid #FF5378;border-radius:999px;padding:4px 12px;margin-bottom:22px}
+h1{font-size:26px;font-weight:600;margin-bottom:10px}h1 span{color:#2DC6FF}
+p{color:#9AA0AA;margin-bottom:20px}
+.row{background:#111318;border:1px solid #1C1F26;border-radius:10px;padding:14px 16px;margin:10px 0;font:13px/1.5 SFMono-Regular,Menlo,monospace;color:#C9CED6;overflow-x:auto}
+.k{color:#79FFD5}.c{color:#6B7280}
+a.btn{display:inline-block;margin-top:14px;background:#2DC6FF;color:#05121A;font-weight:600;text-decoration:none;padding:11px 20px;border-radius:9px}
+.foot{margin-top:26px;font-size:12px;color:#5A6270}
+</style></head><body><div class="card">
+<div class="tag">Straiker &middot; DefendAI</div>
+<h1>AI Security <span>Gateway</span></h1>
+<p>This endpoint fronts your AI traffic &mdash; coding agents, chatbots, and MCP tools &mdash; with Straiker runtime guardrails inline. Point your client's base URL here and pass your gateway key.</p>
+<div class="row"><span class="c"># Coding agents (Claude Code)</span><br>ANTHROPIC_BASE_URL=<span class="k">https://your gateway host</span><br>ANTHROPIC_CUSTOM_HEADERS=<span class="k">"apikey: &lt;your-key&gt;"</span></div>
+<div class="row"><span class="c"># Apps / chatbots (OpenAI-compatible)</span><br>base_url=<span class="k">https://your gateway host</span> &nbsp; header <span class="k">apikey: &lt;your-key&gt;</span><br>models: claude-*, gpt-*, gemini-*, databricks-*, Mistral-*</div>
+<a class="btn" href="/ui">Open the playground &rarr;</a>
+<div class="foot">Guarded by Straiker. Detections appear in your Straiker Console.</div>
+</div></body></html>
