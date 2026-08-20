@@ -32,6 +32,7 @@ from proto.gen import ext_proc_pb2_grpc as pbg
 from proto.gen import shared_envoy_pb2 as envoy
 
 import blocking
+import coding_synth
 import wire
 from config import Settings
 from detect_client import DetectClient, block_reason, is_block
@@ -228,7 +229,14 @@ class StraikerExtProc(pbg.ExternalProcessorServicer):
                 return _immediate(200, body_bytes, ct)
             return _continue_req_body()
 
-        # --- CODING mode: central-parse verbatim relay (x-tool) --------------------------------------
+        # --- CODING mode ------------------------------------------------------------------------------
+        # OpenAI dialects (Codex Responses, Cursor/OpenCode Chat) are EDGE-PARSED on the response, where
+        # the proposed tool calls live; Argus central-parse only covers the Anthropic wire. So for an
+        # OpenAI coding request we relay unscored here and synthesize the full trace at response time.
+        if ex.fmt in ("openai-chat", "openai-responses"):
+            return _continue_req_body()
+
+        # Anthropic coding (Claude Code): central-parse verbatim relay (x-tool: kong-claude-code).
         key = self.s.key_for(ex.app_ref, self.s.coding_key)
         verdict = await self._guarded(self.d.post_gateway(ex.req_body, phase="request", session_id=ex.session_id,
                                                           user=ex.user, model=ex.model, key=key))
@@ -271,6 +279,10 @@ class StraikerExtProc(pbg.ExternalProcessorServicer):
                                             hook="post_call", key=self.s.key_for(ex.app_ref, self.s.agentic_key)))
             return _continue_resp_body()
 
+        # --- CODING, OpenAI dialects: EDGE-PARSE into hook events (x-tool: claude-code) --------------
+        if ex.fmt in ("openai-chat", "openai-responses"):
+            return await self._edge_parse_openai(ex, raw, sse)
+
         if ex.resp_streaming or not self.s.enforce or not has_tool:
             # monitor: async post, never holds the client. Pure-text turns go here too — the
             # backend emits Stop (final answer) from this and nothing enforceable is lost.
@@ -289,6 +301,31 @@ class StraikerExtProc(pbg.ExternalProcessorServicer):
             log.warning("BLOCK response-sync session=%s user=%s reason=%r", ex.session_id, ex.user, block_reason(verdict))
             # Replace the body: the client never receives an executable tool_use.
             return _immediate(200, body_bytes, ct)
+        return _continue_resp_body()
+
+    async def _edge_parse_openai(self, ex: _Exchange, raw: bytes, sse: bool) -> pb.ProcessingResponse:
+        """Synthesize Claude Code hook events from an OpenAI-dialect coding turn and post them on the
+        native contract (x-tool: claude-code). Enforce on the tool events: a blocked PreToolUse
+        replaces the response so the client never receives an executable tool call."""
+        resp_json = wire.parse_json(raw) or {}
+        events = coding_synth.synth_events(ex.req_json, resp_json, ex.fmt, ex.session_id or "", ex.user, ex.model)
+        if not events:
+            return _continue_resp_body()
+        key = self.s.key_for(ex.app_ref, self.s.coding_key)
+        for ev in events:
+            enforce = ev["hook_event_name"] in ("PreToolUse", "PostToolUse")
+            if enforce:
+                verdict = await self._guarded(self.d.post_hook(ev, x_tool="claude-code", key=key))
+                self._tap(f"edge/{ev['hook_event_name']}", ex, verdict)
+                if self.s.enforce and is_block(verdict):
+                    ex.blocked = True
+                    body_bytes, ct = blocking.render(ex.fmt, sse, block_reason(verdict))
+                    log.warning("BLOCK edge %s session=%s user=%s tool=%s reason=%r",
+                                ev["hook_event_name"], ex.session_id, ex.user, ev.get("tool_name"), block_reason(verdict))
+                    return _immediate(200, body_bytes, ct)
+            else:
+                # UserPromptSubmit / Stop never block; post them for the trace without holding the client.
+                self._spawn(self.d.post_hook(ev, x_tool="claude-code", key=key))
         return _continue_resp_body()
 
     # ---------------------------------------------------------------- helpers
