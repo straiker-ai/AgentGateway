@@ -59,7 +59,7 @@ env = {
   "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "unset"),
   "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", "unset"),
   # agentic multi-provider surface (env-interpolated by agentgateway at load)
-  "VERTEX_PROJECT": os.environ.get("VERTEX_PROJECT", ""),
+  "VERTEX_PROJECT": os.environ.get("VERTEX_PROJECT") or "unset",
   "DATABRICKS_HOST": os.environ.get("DATABRICKS_HOST", "unset"),
   "DATABRICKS_TOKEN": os.environ.get("DATABRICKS_TOKEN", "unset"),
   # Bedrock SigV4 (STS session creds; rotate when they expire)
