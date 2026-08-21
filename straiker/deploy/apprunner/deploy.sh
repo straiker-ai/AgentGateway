@@ -10,7 +10,7 @@
 # Requires: fresh AWS creds (ECR + App Runner + Route53), Straiker Projects/.env sourced, deploy/agent-keys.env.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; REPO="$(cd "$HERE/../.." && pwd)"
-REGION="${AWS_REGION:-us-east-1}"; export AWS_PAGER=""
+REGION="${AWS_REGION:-us-east-2}"; export AWS_PAGER=""
 ACCT="$(aws sts get-caller-identity --query Account --output text)"
 ECR="$ACCT.dkr.ecr.$REGION.amazonaws.com"
 IMG="${SERVICE_NAME:-straiker-agentgateway}"; SVC="${SERVICE_NAME:-straiker-agentgateway}"; DOMAIN="${STRAIKER_GATEWAY_DOMAIN:?set STRAIKER_GATEWAY_DOMAIN (e.g. gateway.example.com)}"
@@ -20,7 +20,7 @@ AGW_VERSION="$(tr -d '[:space:]' < "$REPO/gateway/VERSION")"
 
 echo "== 0. preflight: rendered config validates against the PINNED binary ($AGW_VERSION) =="
 RENDERED="$(mktemp -d)"; "$REPO/.venv/bin/python" "$REPO/deploy/render_config.py" > "$RENDERED/config.yaml"
-docker run --rm -e OPENAI_API_KEY=x -e ANTHROPIC_API_KEY=x -e GEMINI_API_KEY=x -e VERTEX_PROJECT=x -e DATABRICKS_HOST=https://x -e DATABRICKS_TOKEN=x -e AWS_ACCESS_KEY_ID=x -e AWS_SECRET_ACCESS_KEY=x -e AWS_SESSION_TOKEN=x -e AWS_REGION=us-east-1 -e AZURE_OPENAI_API_KEY=x -e AZURE_RESOURCE_NAME=x -e AZURE_OPENAI_API_VERSION=x -e STRAIKER_AGENTGATEWAY_KEY=x -e STRAIKER_AGENTGATEWAY_CODING_KEY=x -v "$RENDERED:/cfg" -v "$REPO/deploy/htpasswd:/tmp/agw/htpasswd:ro" \
+docker run --rm -e OPENAI_API_KEY=x -e ANTHROPIC_API_KEY=x -e GEMINI_API_KEY=x -e VERTEX_PROJECT=x -e DATABRICKS_HOST=https://x -e DATABRICKS_TOKEN=x -e AWS_ACCESS_KEY_ID=x -e AWS_SECRET_ACCESS_KEY=x -e AWS_SESSION_TOKEN=x -e AWS_REGION=us-east-2 -e AZURE_OPENAI_API_KEY=x -e AZURE_RESOURCE_NAME=x -e AZURE_OPENAI_API_VERSION=x -e STRAIKER_AGENTGATEWAY_KEY=x -e STRAIKER_AGENTGATEWAY_CODING_KEY=x -v "$RENDERED:/cfg" -v "$REPO/deploy/htpasswd:/tmp/agw/htpasswd:ro" \
   "${AGW_BASE:-straiker-agentgateway-fork:local}" -f /cfg/config.yaml --validate-only
 grep -q "ARG AGW_VERSION=$AGW_VERSION" "$REPO/gateway/Dockerfile" || { echo "Dockerfile pin != gateway/VERSION"; exit 1; }
 CFG_B64="$(base64 < "$RENDERED/config.yaml" | tr -d '\n')"; rm -rf "$RENDERED"
@@ -66,7 +66,7 @@ env = {
   "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", ""),
   "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
   "AWS_SESSION_TOKEN": os.environ.get("AWS_SESSION_TOKEN", ""),
-  "AWS_REGION": "us-east-1",
+  "AWS_REGION": os.environ.get("AWS_REGION", "us-east-2"),
   # Azure AI Foundry
   "AZURE_OPENAI_API_KEY": os.environ.get("AZURE_OPENAI_API_KEY", "unset"),
   "AZURE_RESOURCE_NAME": os.environ.get("AZURE_RESOURCE_NAME", "unset"),

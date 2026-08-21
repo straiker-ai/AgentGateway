@@ -5,7 +5,7 @@
 #   - the CNAME pointing your gateway host at the App Runner DNSTarget
 # Idempotent (UPSERT). Requires the service to be RUNNING.
 set -euo pipefail
-REGION="${AWS_REGION:-us-east-1}"
+REGION="${AWS_REGION:-us-east-2}"
 DOMAIN="${STRAIKER_GATEWAY_DOMAIN:?set STRAIKER_GATEWAY_DOMAIN}"
 ZONE_ID="${ZONE_ID:?set ZONE_ID (your Route53 hosted zone id)}"
 SVC="straiker-agentgateway"
