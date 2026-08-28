@@ -127,6 +127,7 @@ type RegexRulesShape = {
 type GuardrailDraft = {
 	request: GuardDraft[];
 	response: GuardDraft[];
+	streaming: boolean;
 };
 
 const builtinOptions: Array<{ value: BuiltinRule; label: string }> = [
@@ -353,6 +354,20 @@ function GuardrailsEditor(props: {
 				guards={draft.response}
 				onChange={response => applyDraft({ ...draft, response })}
 			/>
+			<label className="guardrails-streaming">
+				<input
+					type="checkbox"
+					checked={draft.streaming}
+					onChange={event => applyDraft({ ...draft, streaming: event.target.checked })}
+				/>
+				<span>
+					<strong>Guard streaming responses</strong>
+					<span className="hint">
+						Score streamed output in rolling windows and reject before the remaining tokens are
+						sent. Applies to every response guard.
+					</span>
+				</span>
+			</label>
 			{dirty ? (
 				<ConfigDiffSaveActions
 					config={props.config}
@@ -924,6 +939,19 @@ function StraikerGuardFields(props: {
 					placeholder="my-chatbot"
 				/>
 			</Field>
+			<Field
+				label="Base URL"
+				tooltip={props.help.field<Straiker>('Straiker', 'baseUrl')}
+				hint="Optional. Override for a regional Straiker deployment."
+			>
+				<input
+					value={props.guard.baseUrl}
+					onChange={event =>
+						props.onChange({ baseUrl: event.target.value } as Partial<SupportedGuardDraft>)
+					}
+					placeholder="https://api.prod.straiker.ai"
+				/>
+			</Field>
 			<FieldGroup
 				label="Failure mode"
 				tooltip={props.help.field<Straiker>('Straiker', 'failureMode')}
@@ -949,6 +977,11 @@ function StraikerGuardFields(props: {
 					}
 				/>
 			</FieldGroup>
+			<p className="guard-note">
+				This guard covers chat and agent traffic. Coding agents (Claude Code, Cursor, Codex,
+				OpenCode) are guarded on their own coding routes and appear as coding-agent activity in
+				your Console.
+			</p>
 		</>
 	);
 }
@@ -1311,7 +1344,8 @@ function PatternList(props: {
 function draftFromGuardrails(guardrails: LlmGuardrail): GuardrailDraft {
 	return {
 		request: (guardrails.request ?? []).flatMap(draftsFromGuard),
-		response: ((guardrails.response ?? []) as GuardObject[]).flatMap(draftsFromGuard)
+		response: ((guardrails.response ?? []) as GuardObject[]).flatMap(draftsFromGuard),
+		streaming: (guardrails as { streaming?: string }).streaming === 'Enabled'
 	};
 }
 
@@ -1461,7 +1495,8 @@ function buildGuardrails(draft: GuardrailDraft): LlmGuardrail {
 	const response = draft.response.map(buildGuard);
 	return cleanEmpty({
 		request: request.length ? request : undefined,
-		response: response.length ? response : undefined
+		response: response.length ? response : undefined,
+		streaming: draft.streaming ? 'Enabled' : undefined
 	}) as LlmGuardrail;
 }
 
