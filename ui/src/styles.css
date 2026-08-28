@@ -1547,6 +1547,8 @@ a {
 }
 
 .guardrails-streaming input {
+	width: auto;
+	flex: none;
 	margin-top: 2px;
 }
 
