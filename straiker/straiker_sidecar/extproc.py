@@ -258,6 +258,12 @@ class StraikerExtProc(pbg.ExternalProcessorServicer):
             return _continue_resp_body()
         raw = b"".join(ex.resp_chunks)
         ex.resp_chunks = []
+        if raw[:2] == b"\x1f\x8b":  # gzip: decode a LOCAL copy for scoring (client still gets the original bytes)
+            import gzip
+            try:
+                raw = gzip.decompress(raw)
+            except OSError:
+                pass
         if ex.req_json is None or not raw:
             return _continue_resp_body()
         if len(raw) > self.s.max_body_bytes:
