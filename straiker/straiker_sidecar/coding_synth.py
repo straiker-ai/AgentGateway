@@ -144,15 +144,24 @@ def synth_events(req_json: dict, resp_json: dict | None, fmt: str, session_id: s
     for tid, name, args in calls:
         events.append(_pre_tool(session_id, tid, name, args))
     if answer and not calls:
-        ev = {"hook_event_name": "Stop", "session_id": session_id, "app_response": answer,
-              "stop_reason": "end_turn"}
-        if model:
-            ev["model"] = model
-        events.append(ev)
+        events.append(stop_event(session_id, answer, user, model))
     for e in events:
         if user and "user_name" not in e:
             e["user_name"] = user
     return events
+
+
+def stop_event(session_id: str, answer: str, user: str | None, model: str | None) -> dict:
+    """The Claude Code `Stop` hook event carrying the final assistant answer. Shared by the
+    OpenAI-dialect edge-parse (synth_events) and the Anthropic path (extproc), so the assistant
+    reply always lands in the Console as a Stop rather than relying on backend derivation."""
+    ev: dict = {"hook_event_name": "Stop", "session_id": session_id, "app_response": answer,
+                "stop_reason": "end_turn"}
+    if user:
+        ev["user_name"] = user
+    if model:
+        ev["model"] = model
+    return ev
 
 
 # ---- robust response decoding (gzip + SSE) so the response tool calls are always recovered --------
@@ -194,8 +203,11 @@ def _reassemble_chat_sse(text: str) -> dict:
 
 
 def _reassemble_responses_sse(text: str) -> dict:
-    """OpenAI Responses SSE -> a single response dict (output items)."""
+    """OpenAI Responses SSE -> a single response dict (output items). Reconstructs both function
+    calls and the assistant's final text (output_text deltas) so a streamed Codex text turn still
+    yields an answer -> Stop."""
     items: dict = {}
+    answer_parts: list[str] = []
     for line in text.split("\n"):
         line = line.strip()
         if not line.startswith("data:"):
@@ -207,6 +219,7 @@ def _reassemble_responses_sse(text: str) -> dict:
             d = json.loads(payload)
         except ValueError:
             continue
+        t = d.get("type")
         item = d.get("item") or {}
         if item.get("type") == "function_call":
             key = item.get("id") or item.get("call_id")
@@ -214,11 +227,16 @@ def _reassemble_responses_sse(text: str) -> dict:
                                           "name": item.get("name"), "arguments": item.get("arguments") or ""})
             if item.get("name"):
                 slot["name"] = item["name"]
-        if d.get("type") == "response.function_call_arguments.delta":
+        if t == "response.function_call_arguments.delta":
             key = d.get("item_id")
             if key in items and isinstance(d.get("delta"), str):
                 items[key]["arguments"] += d["delta"]
-    return {"output": list(items.values())}
+        if t == "response.output_text.delta" and isinstance(d.get("delta"), str):
+            answer_parts.append(d["delta"])
+    output = list(items.values())
+    if answer_parts:
+        output.append({"type": "message", "content": [{"type": "output_text", "text": "".join(answer_parts)}]})
+    return {"output": output}
 
 
 def decode_response(raw: bytes, fmt: str) -> dict:

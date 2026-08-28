@@ -283,9 +283,19 @@ class StraikerExtProc(pbg.ExternalProcessorServicer):
         if ex.fmt in ("openai-chat", "openai-responses"):
             return await self._edge_parse_openai(ex, raw, sse)
 
-        if ex.resp_streaming or not self.s.enforce or not has_tool:
-            # monitor: async post, never holds the client. Pure-text turns go here too — the
-            # backend emits Stop (final answer) from this and nothing enforceable is lost.
+        if not has_tool:
+            # Pure-text final answer (buffered OR streamed): synthesize an explicit Stop hook event
+            # (x-tool: claude-code) carrying the assistant reply, so it ALWAYS lands in the Console as
+            # a Stop instead of relying on the backend to derive one from an async response envelope.
+            answer = wire.answer_text(raw, sse)
+            if answer:
+                ev = coding_synth.stop_event(ex.session_id or "", answer, ex.user, ex.model)
+                self._spawn(self.d.post_hook(ev, x_tool="claude-code", key=self.s.key_for(ex.app_ref, self.s.coding_key)))
+            return _continue_resp_body()
+
+        if ex.resp_streaming or not self.s.enforce:
+            # tool-call turn we cannot enforce (bytes already streamed, or enforcement off): monitor
+            # via the async response envelope so the backend derives PreToolUse. Never holds the client.
             env = wire.response_envelope("response", raw, ex.model, ex.req_json)
             self._spawn(self.d.post_gateway(env, phase="response", session_id=ex.session_id, user=ex.user, model=ex.model, key=self.s.key_for(ex.app_ref, self.s.coding_key)))
             return _continue_resp_body()

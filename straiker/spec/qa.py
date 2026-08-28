@@ -200,8 +200,15 @@ async def main() -> int:
     fd.posts.clear(); fd.queue = [ALLOW, ALLOW]
     await drive(svc, [req_headers(), *body_msg(ANTHRO_REQ), resp_headers(), *body_msg(TEXT_SSE, resp=True)])
     await asyncio.sleep(0.05)
-    phases = [p["phase"] for p in fd.posts]
-    check("buffered + text-only -> request + async response (no sync tax)", phases == ["request", "response"], str(phases))
+    tags = [p["phase"] if p["kind"] == "gateway" else p["event"]["hook_event_name"] for p in fd.posts]
+    check("buffered + text-only -> request + explicit Stop hook (assistant answer lands in Console)", tags == ["request", "Stop"], str(tags))
+    stop = [p for p in fd.posts if p["kind"] == "hook" and p["event"]["hook_event_name"] == "Stop"]
+    check("Stop hook carries the assistant answer + stop_reason", bool(stop) and stop[0]["event"]["app_response"] == "hi" and stop[0]["event"]["stop_reason"] == "end_turn", str(stop[:1]))
+    fd.posts.clear(); fd.queue = [ALLOW, ALLOW]
+    await drive(svc, [req_headers(), *body_msg(ANTHRO_REQ), resp_headers(), *body_msg(TEXT_SSE, resp=True, chunks=4)])
+    await asyncio.sleep(0.05)
+    tags = [p["phase"] if p["kind"] == "gateway" else p["event"]["hook_event_name"] for p in fd.posts]
+    check("streamed + text-only -> request + Stop hook (streaming final answer still lands)", tags == ["request", "Stop"], str(tags))
     fd.posts.clear(); fd.queue = [ALLOW, ALLOW]
     await drive(svc, [req_headers(), *body_msg(ANTHRO_REQ), resp_headers(), *body_msg(TOOL_SSE, resp=True, chunks=4)])
     await asyncio.sleep(0.05)
