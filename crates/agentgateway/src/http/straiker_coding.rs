@@ -538,7 +538,7 @@ mod tests {
 	fn guard(base: Option<&'static str>) -> StraikerCoding {
 		StraikerCoding {
 			api_key: strng::literal!("test-key"),
-			base_url: base.map(|b| strng::new(b)),
+			base_url: base.map(strng::new),
 			source: None,
 			x_tool: None,
 			mode: StraikerCodingMode::Block,
