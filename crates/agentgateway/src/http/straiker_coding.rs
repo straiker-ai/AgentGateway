@@ -426,7 +426,11 @@ fn hdr<'a>(h: &'a ::http::HeaderMap, name: &str) -> Option<&'a str> {
 /// Priority: an explicit client session header; else the W3C `traceparent` trace-id (identical for
 /// this turn's request and response). Returns `None` if neither is present.
 fn session_id(h: &::http::HeaderMap) -> Option<String> {
-	for k in ["x-straiker-session", "x-claude-code-session-id", "x-session-id"] {
+	for k in [
+		"x-straiker-session",
+		"x-claude-code-session-id",
+		"x-session-id",
+	] {
 		if let Some(v) = hdr(h, k)
 			&& !v.is_empty()
 		{
@@ -668,14 +672,7 @@ mod tests {
 	#[test]
 	fn detect_headers_response_phase_and_omits_unknown() {
 		let g = guard(None);
-		let h = detect_headers(
-			&g,
-			Phase::ResponseSync,
-			&HeaderMap::new(),
-			None,
-			None,
-			None,
-		);
+		let h = detect_headers(&g, Phase::ResponseSync, &HeaderMap::new(), None, None, None);
 		let get = |name: &str| h.iter().find(|(k, _)| *k == name).map(|(_, v)| v.as_str());
 		assert_eq!(get("x-straiker-phase"), Some("response-sync"));
 		assert_eq!(get("x-claude-code-session-id"), None);
@@ -703,7 +700,11 @@ mod tests {
 			.expect("monitor response passthrough");
 		let body = std::mem::replace(resp.body_mut(), http::Body::empty());
 		let out = http::read_body_with_limit(body, 1 << 20).await.unwrap();
-		assert_eq!(&out[..], original, "monitor mode must not touch the response body");
+		assert_eq!(
+			&out[..],
+			original,
+			"monitor mode must not touch the response body"
+		);
 	}
 
 	#[test]

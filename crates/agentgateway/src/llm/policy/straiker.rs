@@ -12,8 +12,8 @@ use serde::Deserialize;
 
 use crate::json;
 use crate::llm::RequestType;
-use crate::llm::policy::{Straiker, with_default_timeout};
 use crate::llm::policy::webhook::ResponseChoice;
+use crate::llm::policy::{Straiker, with_default_timeout};
 use crate::proxy::httpproxy::PolicyClient;
 use crate::telemetry::metrics::{OutboundCallKind, OutboundCallSubtype};
 use crate::types::agent::{Backend, BackendTrafficPolicy, ResourceName};
@@ -58,7 +58,11 @@ fn hdr<'a>(h: &'a ::http::HeaderMap, name: &str) -> Option<&'a str> {
 /// response guard (so even a Chat Playground turn with no session header pairs correctly); else a
 /// content hash (last resort — may not pair request with response).
 fn session_id(h: &::http::HeaderMap, seed: &str) -> String {
-	for k in ["x-straiker-session", "x-claude-code-session-id", "x-session-id"] {
+	for k in [
+		"x-straiker-session",
+		"x-claude-code-session-id",
+		"x-session-id",
+	] {
 		if let Some(v) = hdr(h, k)
 			&& !v.is_empty()
 		{
@@ -127,7 +131,10 @@ async fn post(
 		.uri(base_url(s))
 		.method(::http::Method::POST)
 		.header(::http::header::CONTENT_TYPE, "application/json")
-		.header(::http::header::AUTHORIZATION, format!("Bearer {}", s.api_key))
+		.header(
+			::http::header::AUTHORIZATION,
+			format!("Bearer {}", s.api_key),
+		)
 		.header("X-Straiker-Webhook-Format", WEBHOOK_FORMAT)
 		.header("Straiker-Debug", "TRUE")
 		.body(crate::http::Body::from(serde_json::to_vec(&payload)?))?;
@@ -253,7 +260,10 @@ mod tests {
 
 	#[test]
 	fn base_url_defaults_and_trims_trailing_slash() {
-		assert_eq!(base_url(&guard(None)), format!("{DEFAULT_BASE_URL}/api/v1/detect/webhook"));
+		assert_eq!(
+			base_url(&guard(None)),
+			format!("{DEFAULT_BASE_URL}/api/v1/detect/webhook")
+		);
 		assert_eq!(
 			base_url(&guard(Some("https://tenant.example.com/"))),
 			"https://tenant.example.com/api/v1/detect/webhook"
@@ -263,7 +273,10 @@ mod tests {
 	#[test]
 	fn session_id_priority_header_then_traceparent_then_hash() {
 		// explicit session header wins
-		assert_eq!(session_id(&hdrs(&[("x-straiker-session", "S1")]), "seed"), "S1");
+		assert_eq!(
+			session_id(&hdrs(&[("x-straiker-session", "S1")]), "seed"),
+			"S1"
+		);
 		// else the traceparent trace-id (stable across a turn's request + response guards)
 		let tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 		assert_eq!(
@@ -271,7 +284,10 @@ mod tests {
 			"agw-0af7651916cd43dd8448eb211c80319c"
 		);
 		// else a stable content hash; same seed -> same id
-		assert_eq!(session_id(&HeaderMap::new(), "seed"), session_id(&HeaderMap::new(), "seed"));
+		assert_eq!(
+			session_id(&HeaderMap::new(), "seed"),
+			session_id(&HeaderMap::new(), "seed")
+		);
 	}
 
 	#[test]
