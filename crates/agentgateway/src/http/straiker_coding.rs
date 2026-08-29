@@ -689,7 +689,7 @@ mod tests {
 			mode: StraikerCodingMode::Monitor,
 			..guard(None)
 		};
-		let mut sc = g.build(crate::test_helpers::policy::policy_client());
+		let mut sc = g.build(crate::test_helpers::policy_client());
 		let original: &[u8] = br#"{"content":[{"type":"tool_use","name":"Bash"}]}"#;
 		let mut resp = ::http::Response::builder()
 			.status(200)
