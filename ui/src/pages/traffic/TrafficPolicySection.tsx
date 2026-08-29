@@ -77,7 +77,7 @@ const trafficPolicySections: Array<{ title: string; keys: string[] }> = [
 	},
 	{
 		title: 'AI',
-		keys: ['mcpAuthorization', 'mcpGuardrails', 'mcpAuthentication', 'a2a', 'ai']
+		keys: ['straikerCoding', 'mcpAuthorization', 'mcpGuardrails', 'mcpAuthentication', 'a2a', 'ai']
 	},
 	{ title: 'Routing', keys: ['health', 'inferenceRouting', 'http', 'tcp'] }
 ];

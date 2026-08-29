@@ -30,7 +30,7 @@ use crate::http::backendtls::ResolvedBackendTLS;
 use crate::http::ext_proc::GrpcReferenceChannel;
 use crate::http::{
 	HeaderOrPseudo, HeaderValue, ext_authz, ext_proc, filters, health, remoteratelimit, retry,
-	timeout,
+	straiker_coding, timeout,
 };
 use crate::mcp::{FailureMode, McpAuthorization};
 use crate::proxy::httpproxy::PolicyClient;
@@ -2734,6 +2734,7 @@ pub enum TrafficPolicy {
 	RemoteRateLimit(RequestPolicy<remoteratelimit::RemoteRateLimit>),
 	ExtAuthz(RequestPolicy<ext_authz::ExtAuthz>),
 	ExtProc(RequestPolicy<ext_proc::ExtProc>),
+	StraikerCoding(RequestPolicy<straiker_coding::StraikerCoding>),
 	JwtAuth(RequestPolicy<JwtAuthentication>),
 	Oidc(RequestPolicy<crate::http::oidc::OidcPolicy>),
 	BasicAuth(RequestPolicy<crate::http::basicauth::BasicAuthentication>),

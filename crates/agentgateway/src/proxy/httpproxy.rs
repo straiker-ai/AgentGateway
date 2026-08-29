@@ -25,6 +25,7 @@ use crate::http::backendtls::BackendTLS;
 use crate::http::buffer::Buffer;
 use crate::http::ext_proc::{ExtProcRequest, InferenceRoutingDestinationMode};
 use crate::http::filters::{AutoHostname, BackendRequestTimeout};
+use crate::http::straiker_coding::StraikerCodingRequest;
 use crate::http::transformation_cel::Transformation;
 use crate::http::x_headers::TRACEPARENT;
 use crate::http::{
@@ -245,6 +246,18 @@ async fn apply_request_policies(
 			.await?
 			.apply(rp.headers())?;
 		dtrace::snapshot!(Request, "ext proc", &req);
+	}
+
+	// Straiker coding guard: buffers the full prompt and relays it to Straiker for central-parse.
+	// Like ext_proc it retains per-request state for the response phase, but decides synchronously,
+	// so a block is returned here as a direct response (short-circuiting before the upstream call).
+	rp.straiker_coding = pol
+		.straiker_coding
+		.select("straiker coding", req)
+		.map(|p| p.build(c.clone()));
+	if let Some(x) = rp.straiker_coding.as_mut() {
+		x.mutate_request(req).boxed().await?.apply(rp.headers())?;
+		dtrace::snapshot!(Request, "straiker coding", &req);
 	}
 
 	rp.transformation = pol
@@ -4072,6 +4085,7 @@ struct ResponsePolicies {
 	response_headers: HeaderMap,
 	ext_proc: Option<ExtProcRequest>,
 	gateway_ext_proc: Option<ExtProcRequest>,
+	straiker_coding: Option<StraikerCodingRequest>,
 	// Populated by the standard request-policy flow after conditional rate-limit policies are
 	// evaluated. The later LLM path uses these selected policies and does not re-evaluate conditions.
 	llm_request_policies: LLMRequestPolicies,
@@ -4091,6 +4105,11 @@ impl ResponsePolicies {
 			if let Some(resp) = ep.take_body_immediate_response() {
 				return Some(resp);
 			}
+		}
+		if let Some(sc) = &self.straiker_coding
+			&& let Some(resp) = sc.take_body_immediate_response()
+		{
+			return Some(resp);
 		}
 		None
 	}
@@ -4142,6 +4161,13 @@ impl ResponsePolicies {
 					.await?
 					.apply(&mut self.response_headers)?;
 				dtrace::snapshot!(Response, "gateway ext proc", l, &resp);
+			}
+			if let Some(x) = self.straiker_coding.as_mut() {
+				x.mutate_response(resp, l.request_snapshot.as_deref())
+					.boxed()
+					.await?
+					.apply(&mut self.response_headers)?;
+				dtrace::snapshot!(Response, "straiker coding", l, &resp);
 			}
 		}
 

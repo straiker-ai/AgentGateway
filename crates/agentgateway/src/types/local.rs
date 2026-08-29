@@ -43,6 +43,8 @@ use crate::{agentcore, apply, *};
 type LocalExtAuthzPolicy = LocalExplicitOrConditional<crate::http::ext_authz::ExtAuthz>;
 type LocalDirectResponsePolicy = LocalExplicitOrConditional<filters::DirectResponse>;
 type LocalExtProcPolicy = LocalExplicitOrConditional<crate::http::ext_proc::ExtProc>;
+type LocalStraikerCodingPolicy =
+	LocalExplicitOrConditional<crate::http::straiker_coding::StraikerCoding>;
 type LocalRemoteRateLimitPolicy =
 	LocalExplicitOrConditional<crate::http::remoteratelimit::RemoteRateLimit>;
 type LocalTransformationPolicy = LocalExplicitOrConditional<LocalTransformationConfig>;
@@ -2893,6 +2895,9 @@ pub struct FilterOrPolicy {
 	/// Send request and response data to an external processing service.
 	#[serde(default)]
 	ext_proc: Option<LocalExtProcPolicy>,
+	/// Guard Claude Code coding traffic by relaying each turn to Straiker's Detect API.
+	#[serde(default)]
+	straiker_coding: Option<LocalStraikerCodingPolicy>,
 	/// Modify request and response headers, bodies, or metadata.
 	#[serde(default)]
 	#[cfg_attr(
@@ -5153,6 +5158,7 @@ pub(crate) async fn split_policies_for_target(
 		csrf,
 		ext_authz,
 		ext_proc,
+		straiker_coding,
 		buffer,
 		timeout,
 		retry,
@@ -5322,6 +5328,9 @@ pub(crate) async fn split_policies_for_target(
 	}
 	if let Some(p) = ext_proc {
 		route_policies.push(TrafficPolicy::ExtProc(p.into_policy()?))
+	}
+	if let Some(p) = straiker_coding {
+		route_policies.push(TrafficPolicy::StraikerCoding(p.into_policy()?))
 	}
 	if let Some(p) = local_rate_limit
 		&& !p.is_empty()

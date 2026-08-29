@@ -9,26 +9,37 @@ stock upstream image.
 
 ## What it is
 
-Two integration layers, used together:
+Straiker is compiled into the agentgateway binary as **first-class policies** that call Straiker's
+Detect API directly — no sidecar for the primary paths:
 
-1. **Native `straiker` guard (compiled in).** This fork adds Straiker as a first-class guardrail kind
-   (`crates/agentgateway/src/llm/policy/straiker.rs` + UI). In the AgentGateway console, Guardrails →
-   Add guard → **Straiker**: paste a Straiker Defend application key and every guarded prompt/response is
-   scored inline. This covers the chatbot/agentic LLM surface with zero sidecar involvement.
-2. **Sidecar seams (for the surfaces the guard API cannot carry).** agentgateway has no WASM/Lua/plugin
-   API — policies are compiled into the Rust binary. What it has are **external in-path seams**, and we
-   use three of them from ONE sidecar process:
+1. **Native `straiker` guard (chatbot/agent LLM traffic).** A first-class guardrail kind
+   (`crates/agentgateway/src/llm/policy/straiker.rs` + UI). In the console, Guardrails → Add guard →
+   **Straiker**: paste a Straiker Defend key; every guarded prompt/response is scored inline.
+2. **`straikerCoding` route policy (coding agents — Claude Code).** A first-class route policy
+   (`crates/agentgateway/src/http/straiker_coding.rs` + UI, in Routes → Route policies → **Straiker
+   (coding)**) attached to the Claude Code route (`/v1/messages`). It relays the **verbatim**
+   request/response to `POST /api/v1/detect` (`x-tool: kong-claude-code`) and Argus central-parse
+   reconstructs the hook events — **no sidecar, no `127.0.0.1:9000`.** The request-phase block stops a
+   prompt before the model; a buffered tool-call response is adjudicated before the client sees it.
+
+Both call Straiker directly through the gateway's normal egress. The Straiker mark appears on every
+Straiker surface.
+
+**Sidecar seams (the surfaces not yet on a compiled policy).** For the following, agentgateway's
+external in-path seams are still served by ONE Python sidecar process:
 
 | Seam | Transport | Carries | Straiker contract | Can block |
 |---|---|---|---|---|
-| **ExtProc** (Envoy ext_proc v3) | gRPC `127.0.0.1:9000` | **coding agents** — Claude Code, Codex, Cursor, OpenCode, Copilot. Raw verbatim bytes both ways. | central-parse: `POST /api/v1/detect`, `x-tool: kong-claude-code`, `x-straiker-phase: request\|response\|response-sync` | yes — `ImmediateResponse` with a well-formed Anthropic/OpenAI block body |
+| **ExtProc** (Envoy ext_proc v3) | gRPC `127.0.0.1:9000` | **coding agents — OpenAI dialects only**: Codex (Responses), Cursor/OpenCode/Copilot (Chat). Edge-parsed to hook events until Argus central-parse covers these wires (see `docs/ENG-HANDOFF-central-parse-openai-dialects.md`). | `POST /api/v1/detect`, `x-tool: claude-code` (pre-formed hook events) | yes — `ImmediateResponse` |
 | **ExtMCP** | gRPC `127.0.0.1:9001` | **MCP** `tools/call` (name + args) and results | synthesized `PreToolUse`/`PostToolUse` hook events | yes — JSON-RPC `-32001` |
-| **LLM guardrail webhook** | HTTP `127.0.0.1:8080` | **agentic/chatbot** — GCP Vertex/Gemini, OpenAI/ChatGPT-style, Databricks, custom + productivity agents | `/api/v1/detect/webhook` (`kong-gateway` format) | yes — `RejectAction` |
+| **LLM guardrail webhook** | HTTP `127.0.0.1:8080` | fallback path for the agentic webhook contract | `/api/v1/detect/webhook` (`kong-gateway` format) | yes — `RejectAction` |
 
-Why not the guardrail webhook for coding agents: it flattens content to `role`+`content` strings, destroying
-`tool_use`/`tool_result`. Central-parse needs the verbatim body. ExtProc is byte-for-byte Kong's relay shape.
+Why the OpenAI coding dialects still use the sidecar: Argus central-parse reconstructs coding hook
+events from the **Anthropic** wire today, but not yet from the OpenAI Chat/Responses wires — so those
+are edge-parsed in the sidecar until the backend catches up. When it does, they move onto the same
+`straikerCoding` route policy (config swap) and the sidecar drops out of the coding path entirely.
 
-Why one container: App Runner is HTTP/1.1-only with no gRPC ingress; gRPC stays on loopback.
+Why one container: App Runner is HTTP/1.1-only with no gRPC ingress; the remaining gRPC seams stay on loopback.
 
 ## Layout
 ```

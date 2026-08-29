@@ -1892,6 +1892,17 @@
             }
           ]
         },
+        "straikerCoding": {
+          "description": "Guard Claude Code coding traffic by relaying each turn to Straiker's Detect API.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalExplicitOrConditional_StraikerCoding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "transformations": {
           "description": "Modify request and response headers, bodies, or metadata.",
           "anyOf": [
@@ -7262,6 +7273,168 @@
             "backend"
           ]
         }
+      ]
+    },
+    "LocalExplicitOrConditional_StraikerCoding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LocalConditionalPolicies_StraikerCoding"
+        },
+        {
+          "$ref": "#/$defs/StraikerCoding"
+        }
+      ]
+    },
+    "LocalConditionalPolicies_StraikerCoding": {
+      "type": "object",
+      "properties": {
+        "conditional": {
+          "description": "conditional policy entries. An entry without a condition must be the final fallback.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LocalConditionalPolicy_StraikerCoding"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "conditional"
+      ]
+    },
+    "LocalConditionalPolicy_StraikerCoding": {
+      "description": "Configuration for the Straiker DefendAI coding guard.\n\nScores Claude Code prompts and tool-call responses against the tenant's Straiker runtime\nguardrail policy by calling the Straiker Detect API directly. The `api_key` selects the\ntenant + app, so a customer configures this guard entirely in the UI by pasting their key.",
+      "type": "object",
+      "properties": {
+        "condition": {
+          "description": "condition must evaluate to true for this policy to execute. If unset, the policy is the fallback.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "apiKey": {
+          "description": "Straiker Defend application key (sent as a Bearer token). Selects the tenant and app.",
+          "type": "string"
+        },
+        "baseUrl": {
+          "description": "Straiker API base URL. Defaults to `https://api.prod.straiker.ai`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Application name for Console auto-enumeration (`x-straiker-source`). A request\n`x-straiker-source` header overrides this per call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "xTool": {
+          "description": "Integration tag forwarded as the `x-tool` header. Defaults to `kong-claude-code`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "Whether to block flagged turns or only record them. Defaults to `block`.",
+          "$ref": "#/$defs/StraikerCodingMode"
+        },
+        "failureMode": {
+          "description": "Behaviour when Straiker is unreachable. Defaults to `failOpen` so a guardrail\noutage never takes down live coding traffic.",
+          "$ref": "#/$defs/WebhookFailureMode",
+          "default": "failOpen"
+        },
+        "policies": {
+          "description": "Backend policies used when calling Straiker (TLS, etc.).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SimpleLocalBackendPolicies"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "apiKey"
+      ]
+    },
+    "StraikerCodingMode": {
+      "description": "Enforcement mode for the coding guard.",
+      "oneOf": [
+        {
+          "description": "Score every turn but never block; only record the verdict.",
+          "type": "string",
+          "const": "monitor"
+        },
+        {
+          "description": "Block prompts and tool-call responses that Straiker flags (default).",
+          "type": "string",
+          "const": "block"
+        }
+      ]
+    },
+    "StraikerCoding": {
+      "description": "Configuration for the Straiker DefendAI coding guard.\n\nScores Claude Code prompts and tool-call responses against the tenant's Straiker runtime\nguardrail policy by calling the Straiker Detect API directly. The `api_key` selects the\ntenant + app, so a customer configures this guard entirely in the UI by pasting their key.",
+      "type": "object",
+      "properties": {
+        "apiKey": {
+          "description": "Straiker Defend application key (sent as a Bearer token). Selects the tenant and app.",
+          "type": "string"
+        },
+        "baseUrl": {
+          "description": "Straiker API base URL. Defaults to `https://api.prod.straiker.ai`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Application name for Console auto-enumeration (`x-straiker-source`). A request\n`x-straiker-source` header overrides this per call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "xTool": {
+          "description": "Integration tag forwarded as the `x-tool` header. Defaults to `kong-claude-code`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "Whether to block flagged turns or only record them. Defaults to `block`.",
+          "$ref": "#/$defs/StraikerCodingMode"
+        },
+        "failureMode": {
+          "description": "Behaviour when Straiker is unreachable. Defaults to `failOpen` so a guardrail\noutage never takes down live coding traffic.",
+          "$ref": "#/$defs/WebhookFailureMode",
+          "default": "failOpen"
+        },
+        "policies": {
+          "description": "Backend policies used when calling Straiker (TLS, etc.).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SimpleLocalBackendPolicies"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "apiKey"
       ]
     },
     "LocalExplicitOrConditional_LocalTransformationConfig": {

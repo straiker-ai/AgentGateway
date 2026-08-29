@@ -3844,6 +3844,7 @@ fn traffic_policy_kind_name(policy: &TrafficPolicy) -> &'static str {
 		TrafficPolicy::RemoteRateLimit(_) => "remoteRateLimit",
 		TrafficPolicy::ExtAuthz(_) => "extAuthz",
 		TrafficPolicy::ExtProc(_) => "extProc",
+		TrafficPolicy::StraikerCoding(_) => "straikerCoding",
 		TrafficPolicy::JwtAuth(_) => "jwt",
 		TrafficPolicy::Oidc(_) => "oidc",
 		TrafficPolicy::BasicAuth(_) => "basicAuth",

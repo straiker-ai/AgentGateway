@@ -48,16 +48,10 @@ routes:
       keys:
       - key: dev-key-1
         metadata: { user: dev@example.com, team: se, app: dev@example.com, straiker_app: "" }
-    extProc: &extproc_buffered
-      host: "127.0.0.1:9000"                     # Straiker sidecar ExtProc (h2c, loopback)
-      failureMode: failOpen                      # guardrail outage must not take down dev sessions
-      processingOptions:
-        requestBodyMode: buffered                # score BEFORE upstream
-        responseBodyMode: buffered               # buffered = ENFORCEABLE (tool_use adjudicated before the client sees it)
-      requestAttributes:
-        x-straiker-user: 'apiKey.user'
-        x-straiker-app: 'apiKey.straiker_app'    # per-consumer Straiker key selector (customer's own tenant/app)
-        x-straiker-mode: '"coding"'              # coding-agent hook contract (x-tool). default is agentic.
+    straikerCoding:                              # Straiker DefendAI coding guard — a compiled-in route policy
+      apiKey: "$STRAIKER_AGENTGATEWAY_CODING_KEY" # that calls Straiker /api/v1/detect DIRECTLY (no sidecar).
+      mode: block                                # Buffered relay: the prompt and any tool_use are adjudicated
+      source: claude-code                        # before the client sees them. Central-parse (x-tool kong-claude-code).
   backends:
   - host: api.anthropic.com:443
     policies:
@@ -92,7 +86,16 @@ routes:
   policies:
     apiKey: *keys
     urlRewrite: { path: { prefix: /v1/ } }
-    extProc: *extproc_buffered
+    extProc: &extproc_buffered                   # Straiker sidecar ExtProc (h2c, loopback). OpenAI dialects
+      host: "127.0.0.1:9000"                     # (Codex/Cursor/OpenCode/Copilot) stay on the sidecar until
+      failureMode: failOpen                      # Argus central-parse covers their wire (the Eng/beta step).
+      processingOptions:
+        requestBodyMode: buffered
+        responseBodyMode: buffered
+      requestAttributes:
+        x-straiker-user: 'apiKey.user'
+        x-straiker-app: 'apiKey.straiker_app'
+        x-straiker-mode: '"coding"'
   backends:
   - host: api.openai.com:443
     policies:

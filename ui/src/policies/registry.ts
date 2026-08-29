@@ -11,9 +11,15 @@ import {
 	Timer,
 	Workflow
 } from 'lucide-react';
-import type { ComponentType } from 'react';
+import { createElement, type ComponentType } from 'react';
 
+import straikerIcon from '@/assets/providers/straiker.svg';
 import type { PolicyKey } from '@/policies/types';
+
+// The Straiker mark, used wherever a Straiker guard/policy is listed so the brand is consistent
+// across every path (the LLM guardrail, this coding route policy, MCP).
+const StraikerMark: ComponentType<{ size?: number }> = ({ size = 16 }) =>
+	createElement('img', { src: straikerIcon, width: size, height: size, alt: '' });
 
 export const policyUi: Partial<
 	Record<
@@ -61,6 +67,7 @@ export const policyUi: Partial<
 		icon: SlidersHorizontal,
 		customEditor: 'extProc'
 	},
+	straikerCoding: { title: 'Straiker (coding)', icon: StraikerMark },
 	jwtAuth: { title: 'JWT auth', icon: FileKey2, customEditor: 'jwtAuth' },
 	localRateLimit: {
 		title: 'Local rate limit',
