@@ -57,23 +57,21 @@ routes:
     policies:
       backendTLS: { hostname: api.anthropic.com }
 
-# ---- Claude Code, STREAMING preset (ANTHROPIC_BASE_URL=https://<gw>/streaming) — TTFT preserved, monitor-only
+# ---- Claude Code, STREAMING preset (ANTHROPIC_BASE_URL=https://<gw>/streaming) — TTFT preserved, detect-only
+# Streaming is a DETECT surface: the compiled straikerCoding guard in `monitor` mode scores the prompt on
+# the request phase (never blocks) and lets the model's SSE response stream back UNTOUCHED (no buffering, so
+# TTFT is preserved). For full enforcement incl. tool-call blocking, use the buffered /v1/messages route.
 - name: claude-code-streaming
   matches:
   - path: { pathPrefix: /streaming/v1/messages }
   policies:
+    requestHeaderModifier: *ident                # same real-developer identity on the wire
     apiKey: *keys
     urlRewrite: { path: { prefix: /v1/messages } }
-    extProc: &extproc_streaming
-      host: "127.0.0.1:9000"
-      failureMode: failOpen
-      processingOptions:
-        requestBodyMode: buffered
-        responseBodyMode: fullDuplexStreamed     # tokens stream through; response scored async (monitor-only)
-      requestAttributes:
-        x-straiker-user: 'apiKey.user'
-        x-straiker-app: 'apiKey.straiker_app'
-        x-straiker-mode: '"coding"'
+    straikerCoding:
+      apiKey: "$STRAIKER_AGENTGATEWAY_CODING_KEY"
+      mode: monitor                              # detect-only: prompt scored on request; response streams untouched
+      source: claude-code-streaming
   backends:
   - host: api.anthropic.com:443
     policies:
