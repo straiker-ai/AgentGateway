@@ -59,10 +59,10 @@ fn hdr<'a>(h: &'a ::http::HeaderMap, name: &str) -> Option<&'a str> {
 /// content hash (last resort — may not pair request with response).
 fn session_id(h: &::http::HeaderMap, seed: &str) -> String {
 	for k in ["x-straiker-session", "x-claude-code-session-id", "x-session-id"] {
-		if let Some(v) = hdr(h, k) {
-			if !v.is_empty() {
-				return v.to_string();
-			}
+		if let Some(v) = hdr(h, k)
+			&& !v.is_empty()
+		{
+			return v.to_string();
 		}
 	}
 	// traceparent = "00-<32-hex trace-id>-<span-id>-<flags>"; the trace-id is stable per request.
@@ -88,10 +88,10 @@ fn source(s: &Straiker, h: &::http::HeaderMap) -> String {
 
 fn user_name(h: &::http::HeaderMap) -> Option<String> {
 	for k in ["x-straiker-user", "x-consumer-username"] {
-		if let Some(v) = hdr(h, k) {
-			if !v.is_empty() {
-				return Some(v.to_string());
-			}
+		if let Some(v) = hdr(h, k)
+			&& !v.is_empty()
+		{
+			return Some(v.to_string());
 		}
 	}
 	None
@@ -226,7 +226,7 @@ mod tests {
 	fn guard(base: Option<&'static str>) -> Straiker {
 		Straiker {
 			api_key: strng::literal!("test-key"),
-			base_url: base.map(|b| strng::new(b)),
+			base_url: base.map(strng::new),
 			source: None,
 			failure_mode: FailureMode::FailOpen,
 			policies: vec![],
