@@ -695,7 +695,9 @@ mod tests {
 			.status(200)
 			.body(http::Body::from(Bytes::from_static(original)))
 			.unwrap();
-		sc.mutate_response(&mut resp, None)
+		// Monitor returns a no-op default PolicyResponse; bind it to satisfy `#[must_use]`.
+		let _passthrough = sc
+			.mutate_response(&mut resp, None)
 			.await
 			.expect("monitor response passthrough");
 		let body = std::mem::replace(resp.body_mut(), http::Body::empty());
