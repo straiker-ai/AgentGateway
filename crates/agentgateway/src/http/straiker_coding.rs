@@ -264,6 +264,17 @@ impl StraikerCodingRequest {
 		// in the signature to match the ext_proc dispatch surface.
 		_request: Option<&RequestSnapshot>,
 	) -> Result<PolicyResponse, ProxyError> {
+		// Monitor (detect) mode never blocks, so there is nothing to enforce on the response.
+		// Skip response handling entirely and let the body flow through untouched. This is what
+		// makes the guard safe on a STREAMING route: buffering the response to score it would
+		// collect every SSE frame before releasing any, destroying token-by-token streaming/TTFT.
+		// Streaming is therefore a detect-only surface — the prompt is scored on the request phase
+		// (`mutate_request`, which never blocks in Monitor mode), and the model's response streams
+		// back unmodified. Use `Block` mode (buffered route) for full enforcement incl. tool-call blocking.
+		if self.guard.mode == StraikerCodingMode::Monitor {
+			return Ok(PolicyResponse::default());
+		}
+
 		let limit = http::response_buffer_limit(resp);
 		let body = std::mem::replace(resp.body_mut(), http::Body::empty());
 		let bytes = match http::read_body_with_limit(body, limit).await {
@@ -415,7 +426,11 @@ fn hdr<'a>(h: &'a ::http::HeaderMap, name: &str) -> Option<&'a str> {
 /// Priority: an explicit client session header; else the W3C `traceparent` trace-id (identical for
 /// this turn's request and response). Returns `None` if neither is present.
 fn session_id(h: &::http::HeaderMap) -> Option<String> {
-	for k in ["x-straiker-session", "x-claude-code-session-id", "x-session-id"] {
+	for k in [
+		"x-straiker-session",
+		"x-claude-code-session-id",
+		"x-session-id",
+	] {
 		if let Some(v) = hdr(h, k)
 			&& !v.is_empty()
 		{
@@ -657,19 +672,41 @@ mod tests {
 	#[test]
 	fn detect_headers_response_phase_and_omits_unknown() {
 		let g = guard(None);
-		let h = detect_headers(
-			&g,
-			Phase::ResponseSync,
-			&HeaderMap::new(),
-			None,
-			None,
-			None,
-		);
+		let h = detect_headers(&g, Phase::ResponseSync, &HeaderMap::new(), None, None, None);
 		let get = |name: &str| h.iter().find(|(k, _)| *k == name).map(|(_, v)| v.as_str());
 		assert_eq!(get("x-straiker-phase"), Some("response-sync"));
 		assert_eq!(get("x-claude-code-session-id"), None);
 		assert_eq!(get("x-straiker-user"), None);
 		assert_eq!(get("x-straiker-source"), None);
+	}
+
+	#[tokio::test]
+	async fn monitor_mode_passes_response_through_untouched() {
+		// Monitor (detect) mode must NOT buffer or rewrite the response — that is what keeps a
+		// streaming route streaming. Even a tool-call body (which Block mode would score and could
+		// replace) must come back byte-for-byte unchanged, with no detect call attempted.
+		let g = StraikerCoding {
+			mode: StraikerCodingMode::Monitor,
+			..guard(None)
+		};
+		let mut sc = g.build(crate::test_helpers::policy_client());
+		let original: &[u8] = br#"{"content":[{"type":"tool_use","name":"Bash"}]}"#;
+		let mut resp = ::http::Response::builder()
+			.status(200)
+			.body(http::Body::from(Bytes::from_static(original)))
+			.unwrap();
+		// Monitor returns a no-op default PolicyResponse; bind it to satisfy `#[must_use]`.
+		let _passthrough = sc
+			.mutate_response(&mut resp, None)
+			.await
+			.expect("monitor response passthrough");
+		let body = std::mem::replace(resp.body_mut(), http::Body::empty());
+		let out = http::read_body_with_limit(body, 1 << 20).await.unwrap();
+		assert_eq!(
+			&out[..],
+			original,
+			"monitor mode must not touch the response body"
+		);
 	}
 
 	#[test]
