@@ -318,7 +318,7 @@ impl StraikerCodingRequest {
 			// other gateway integrations. Stop is a trace event and never blocks, so a failure here is
 			// logged and the response is returned untouched.
 			if let Some(captured) = self.captured.as_ref()
-				&& let Some(answer) = answer_text(&bytes)
+				&& let Some(answer) = answer_text(&decoded)
 			{
 				let headers = stop_headers(&self.guard, resp.headers(), captured);
 				let payload = stop_event_json(&answer, captured);
