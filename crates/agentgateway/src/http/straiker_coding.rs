@@ -22,8 +22,10 @@
 //     tool_use response is replaced with a well-formed Anthropic text message.
 use agent_core::strng;
 use agent_core::strng::Strng;
+use async_compression::tokio::bufread::GzipDecoder;
 use bytes::Bytes;
 use serde::Deserialize;
+use tokio::io::{AsyncReadExt, BufReader};
 use tracing::warn;
 
 use crate::cel::RequestSnapshot;
@@ -290,8 +292,15 @@ impl StraikerCodingRequest {
 			},
 		};
 
+		// Upstream returns the body `content-encoding: gzip`, so every inspection below must run on the
+		// DECODED bytes: a raw byte scan never matches `tool_use` and a raw parse never yields the
+		// answer, which silently skipped BOTH the response-phase enforcement point and the Stop event
+		// (no error was logged because each was guarded by a check that simply came back false/None).
+		// The client still receives the original, untouched bytes.
+		let decoded = decoded_body(&bytes, resp.headers()).await;
+
 		// Only enforce on tool-call responses (substring check mirrors the sidecar).
-		if !contains_tool_use(&bytes) {
+		if !contains_tool_use(&decoded) {
 			// Pure-text final answer: post an explicit `Stop` hook event carrying the assistant reply so
 			// the answer always lands in the Console as a Stop, completing the turn's trace
 			// (UserPromptSubmit -> PostToolUse -> PreToolUse -> Stop) at parity with the sidecar and the
@@ -315,7 +324,7 @@ impl StraikerCodingRequest {
 			return Ok(PolicyResponse::default());
 		};
 
-		let envelope = response_envelope(&bytes, captured);
+		let envelope = response_envelope(&decoded, captured);
 		let headers = detect_headers(
 			&self.guard,
 			Phase::ResponseSync,
@@ -428,6 +437,31 @@ fn stop_headers(
 		h.push(("x-straiker-model", m.clone()));
 	}
 	h
+}
+
+/// Upstream returns `/v1/messages` responses `content-encoding: gzip`, so every inspection the guard
+/// does must run on the DECODED bytes. Scanning the compressed body never matches `tool_use` and
+/// parsing it never yields the answer, which silently disabled both the response-phase enforcement
+/// point and the `Stop` event. Falls back to the raw bytes if decoding fails, so a decode problem
+/// degrades the guard rather than dropping the turn. The client always receives the original bytes.
+async fn decoded_body(bytes: &Bytes, headers: &::http::HeaderMap) -> Bytes {
+	let gzipped = headers
+		.get(::http::header::CONTENT_ENCODING)
+		.and_then(|v| v.to_str().ok())
+		.is_some_and(|v| v.to_ascii_lowercase().contains("gzip"))
+		|| bytes.starts_with(&[0x1f, 0x8b]);
+	if !gzipped {
+		return bytes.clone();
+	}
+	let mut decoder = GzipDecoder::new(BufReader::new(&bytes[..]));
+	let mut out = Vec::new();
+	match decoder.read_to_end(&mut out).await {
+		Ok(_) => Bytes::from(out),
+		Err(e) => {
+			warn!(error = %e, "straiker coding: response gunzip failed; inspecting raw bytes");
+			bytes.clone()
+		},
+	}
 }
 
 /// The assistant's final text answer from a buffered Anthropic `/v1/messages` response body.
@@ -793,6 +827,36 @@ mod tests {
 			original,
 			"monitor mode must not touch the response body"
 		);
+	}
+
+	#[tokio::test]
+	async fn gzipped_response_is_decoded_before_inspection() {
+		// Upstream gzips the response. Inspecting the compressed bytes silently found neither the
+		// tool call nor the answer, which disabled the enforcement point AND the Stop event with no
+		// error logged. Decoding first must recover both.
+		let plain: &[u8] = br#"{"content":[{"type":"text","text":"final answer"},{"type":"tool_use","name":"Bash"}]}"#;
+		let mut enc = async_compression::tokio::bufread::GzipEncoder::new(BufReader::new(plain));
+		let mut gz = Vec::new();
+		enc.read_to_end(&mut gz).await.unwrap();
+		let gz = Bytes::from(gz);
+
+		// the bug: raw compressed bytes yield nothing
+		assert_eq!(answer_text(&gz), None, "raw gzip must not parse");
+		assert!(!contains_tool_use(&gz), "raw gzip must not match tool_use");
+
+		// the fix: decoded bytes recover both signals
+		let mut h = HeaderMap::new();
+		h.insert(
+			::http::header::CONTENT_ENCODING,
+			HeaderValue::from_static("gzip"),
+		);
+		let out = decoded_body(&gz, &h).await;
+		assert_eq!(answer_text(&out).as_deref(), Some("final answer"));
+		assert!(contains_tool_use(&out));
+
+		// an uncompressed body passes through untouched
+		let plain_b = Bytes::from_static(plain);
+		assert_eq!(decoded_body(&plain_b, &HeaderMap::new()).await, plain_b);
 	}
 
 	#[test]
