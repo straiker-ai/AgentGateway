@@ -466,12 +466,40 @@ async fn decoded_body(bytes: &Bytes, headers: &::http::HeaderMap) -> Bytes {
 
 /// The assistant's final text answer from a buffered Anthropic `/v1/messages` response body.
 fn answer_text(body: &[u8]) -> Option<String> {
-	let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-	let content = v.get("content")?.as_array()?;
+	// Buffered JSON message: `content[]` blocks of type `text`.
+	if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body)
+		&& let Some(content) = v.get("content").and_then(|c| c.as_array())
+	{
+		let mut out = String::new();
+		for c in content {
+			if c.get("type").and_then(|t| t.as_str()) == Some("text")
+				&& let Some(t) = c.get("text").and_then(|t| t.as_str())
+			{
+				out.push_str(t);
+			}
+		}
+		if !out.is_empty() {
+			return Some(out);
+		}
+	}
+	// SSE stream — what Claude Code actually receives, since it sends `stream: true`. The answer
+	// arrives as `content_block_delta` frames and must be reassembled. Parsing only the buffered
+	// shape silently returned `None` on every real turn, so no `Stop` was ever posted.
+	let text = std::str::from_utf8(body).ok()?;
 	let mut out = String::new();
-	for c in content {
-		if c.get("type").and_then(|t| t.as_str()) == Some("text")
-			&& let Some(t) = c.get("text").and_then(|t| t.as_str())
+	for line in text.lines() {
+		let Some(payload) = line.trim().strip_prefix("data:") else {
+			continue;
+		};
+		let payload = payload.trim();
+		if payload.is_empty() || payload == "[DONE]" {
+			continue;
+		}
+		let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+			continue;
+		};
+		if v.get("type").and_then(|t| t.as_str()) == Some("content_block_delta")
+			&& let Some(t) = v.pointer("/delta/text").and_then(|t| t.as_str())
 		{
 			out.push_str(t);
 		}
@@ -858,6 +886,23 @@ mod tests {
 		// an uncompressed body passes through untouched
 		let plain_b = Bytes::from_static(plain);
 		assert_eq!(decoded_body(&plain_b, &HeaderMap::new()).await, plain_b);
+	}
+
+	#[test]
+	fn answer_text_reassembles_sse_stream() {
+		// Claude Code sends `stream: true`, so a real turn's response is SSE, not a buffered message.
+		// Parsing only the buffered shape returned None on every live turn, so no Stop was ever posted.
+		let sse = concat!(
+			"event: message_start\n",
+			"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude\"}}\n\n",
+			"event: content_block_delta\n",
+			"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"quota is \"}}\n\n",
+			"event: content_block_delta\n",
+			"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"4242\"}}\n\n",
+			"event: message_stop\n",
+			"data: {\"type\":\"message_stop\"}\n\n",
+		);
+		assert_eq!(answer_text(sse.as_bytes()).as_deref(), Some("quota is 4242"));
 	}
 
 	#[test]
