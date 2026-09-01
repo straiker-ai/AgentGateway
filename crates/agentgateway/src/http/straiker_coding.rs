@@ -834,7 +834,8 @@ mod tests {
 		// Upstream gzips the response. Inspecting the compressed bytes silently found neither the
 		// tool call nor the answer, which disabled the enforcement point AND the Stop event with no
 		// error logged. Decoding first must recover both.
-		let plain: &[u8] = br#"{"content":[{"type":"text","text":"final answer"},{"type":"tool_use","name":"Bash"}]}"#;
+		let plain: &[u8] =
+			br#"{"content":[{"type":"text","text":"final answer"},{"type":"tool_use","name":"Bash"}]}"#;
 		let mut enc = async_compression::tokio::bufread::GzipEncoder::new(BufReader::new(plain));
 		let mut gz = Vec::new();
 		enc.read_to_end(&mut gz).await.unwrap();
