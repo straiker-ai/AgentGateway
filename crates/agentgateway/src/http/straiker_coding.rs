@@ -38,6 +38,10 @@ use crate::{apply, schema};
 
 const DEFAULT_BASE_URL: &str = "https://api.prod.straiker.ai";
 const DEFAULT_X_TOOL: &str = "kong-claude-code";
+/// The final assistant answer is posted as a PRE-FORMED hook event on the native contract, the same
+/// tag the sidecar, the Kong plugin and the LiteLLM guardrail use — not the central-parse tag that
+/// carries the verbatim relay.
+const STOP_X_TOOL: &str = "claude-code";
 /// Message surfaced to the coding client when a turn is blocked.
 const BLOCK_REQUEST_TEXT: &str = "This prompt was blocked by Straiker DefendAI.";
 const BLOCK_RESPONSE_TEXT: &str = "This tool call was blocked by Straiker DefendAI.";
@@ -215,7 +219,7 @@ impl StraikerCodingRequest {
 		};
 
 		let session = session_id(req.headers());
-		let user = user_name(req.headers());
+		let user = user_name(req);
 		let model = model_from_body(&bytes);
 
 		let headers = detect_headers(
@@ -288,6 +292,20 @@ impl StraikerCodingRequest {
 
 		// Only enforce on tool-call responses (substring check mirrors the sidecar).
 		if !contains_tool_use(&bytes) {
+			// Pure-text final answer: post an explicit `Stop` hook event carrying the assistant reply so
+			// the answer always lands in the Console as a Stop, completing the turn's trace
+			// (UserPromptSubmit -> PostToolUse -> PreToolUse -> Stop) at parity with the sidecar and the
+			// other gateway integrations. Stop is a trace event and never blocks, so a failure here is
+			// logged and the response is returned untouched.
+			if let Some(captured) = self.captured.as_ref()
+				&& let Some(answer) = answer_text(&bytes)
+			{
+				let headers = stop_headers(&self.guard, resp.headers(), captured);
+				let payload = stop_event_json(&answer, captured);
+				if let Err(e) = post(&self.client, &self.guard, headers, payload).await {
+					warn!(error = %e, phase = "straiker coding stop", "straiker coding stop post failed");
+				}
+			}
 			*resp.body_mut() = http::Body::from(bytes);
 			return Ok(PolicyResponse::default());
 		}
@@ -389,6 +407,63 @@ async fn post(
 	Ok(verdict)
 }
 
+/// Headers for the `Stop` post. The final answer is a pre-formed hook event, so it goes on the
+/// native `x-tool: claude-code` contract with the turn's correlation identity.
+fn stop_headers(
+	guard: &StraikerCoding,
+	incoming: &::http::HeaderMap,
+	c: &CapturedRequest,
+) -> Vec<(&'static str, String)> {
+	let mut h = vec![("x-tool", STOP_X_TOOL.to_string())];
+	if let Some(src) = source(guard, incoming) {
+		h.push(("x-straiker-source", src));
+	}
+	if let Some(s) = &c.session {
+		h.push(("x-claude-code-session-id", s.clone()));
+	}
+	if let Some(u) = &c.user {
+		h.push(("x-straiker-user", u.clone()));
+	}
+	if let Some(m) = &c.model {
+		h.push(("x-straiker-model", m.clone()));
+	}
+	h
+}
+
+/// The assistant's final text answer from a buffered Anthropic `/v1/messages` response body.
+fn answer_text(body: &[u8]) -> Option<String> {
+	let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+	let content = v.get("content")?.as_array()?;
+	let mut out = String::new();
+	for c in content {
+		if c.get("type").and_then(|t| t.as_str()) == Some("text")
+			&& let Some(t) = c.get("text").and_then(|t| t.as_str())
+		{
+			out.push_str(t);
+		}
+	}
+	(!out.is_empty()).then_some(out)
+}
+
+/// The Claude Code `Stop` hook event carrying the final assistant answer — the same shape the
+/// sidecar and the other gateway integrations post, so the reply lands in the Console as a `Stop`
+/// rather than relying on the backend to derive one.
+fn stop_event_json(answer: &str, c: &CapturedRequest) -> Bytes {
+	let mut ev = serde_json::json!({
+		"hook_event_name": "Stop",
+		"session_id": c.session.clone().unwrap_or_default(),
+		"app_response": answer,
+		"stop_reason": "end_turn",
+	});
+	if let Some(u) = &c.user {
+		ev["user_name"] = serde_json::Value::String(u.clone());
+	}
+	if let Some(m) = &c.model {
+		ev["model"] = serde_json::Value::String(m.clone());
+	}
+	Bytes::from(serde_json::to_vec(&ev).unwrap_or_default())
+}
+
 /// Builds the Detect request headers for one phase. Header names are static; values are cloned from
 /// the incoming request when known. `x-straiker-source` prefers a per-request header, then config.
 fn detect_headers(
@@ -453,9 +528,20 @@ fn source(guard: &StraikerCoding, h: &::http::HeaderMap) -> Option<String> {
 		.or_else(|| guard.source.as_ref().map(|v| v.to_string()))
 }
 
-fn user_name(h: &::http::HeaderMap) -> Option<String> {
+/// Identity for the turn, resolved AUTOMATICALLY from the consumer key: the API-key policy inserts
+/// its `Claims` (key + metadata) into the request extensions, so the guard reads the authenticated
+/// user directly instead of depending on a header that a later-running policy sets. Falls back to an
+/// explicit identity header for callers that supply one themselves.
+fn user_name(req: &http::Request) -> Option<String> {
+	if let Some(claims) = req.extensions().get::<crate::http::apikey::Claims>()
+		&& let Ok(v) = serde_json::to_value(claims)
+		&& let Some(u) = v.get("user").and_then(|u| u.as_str())
+		&& !u.is_empty()
+	{
+		return Some(u.to_string());
+	}
 	for k in ["x-straiker-user", "x-consumer-username"] {
-		if let Some(v) = hdr(h, k)
+		if let Some(v) = hdr(req.headers(), k)
 			&& !v.is_empty()
 		{
 			return Some(v.to_string());
@@ -707,6 +793,54 @@ mod tests {
 			original,
 			"monitor mode must not touch the response body"
 		);
+	}
+
+	#[test]
+	fn answer_text_extracts_assistant_reply() {
+		let body = br#"{"content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]}"#;
+		assert_eq!(answer_text(body).as_deref(), Some("Hello world"));
+		// a tool-call response carries no text blocks -> no Stop answer
+		assert_eq!(
+			answer_text(br#"{"content":[{"type":"tool_use","name":"Bash"}]}"#),
+			None
+		);
+		assert_eq!(answer_text(b"not json"), None);
+	}
+
+	#[test]
+	fn stop_event_carries_answer_session_user_and_model() {
+		let captured = CapturedRequest {
+			body: Bytes::from_static(b"{}"),
+			session: Some("sess-9".into()),
+			user: Some("phimmasone@straiker.ai".into()),
+			model: Some("claude-sonnet-4-5".into()),
+		};
+		let ev: serde_json::Value =
+			serde_json::from_slice(&stop_event_json("the final answer", &captured)).unwrap();
+		assert_eq!(ev["hook_event_name"], "Stop");
+		assert_eq!(ev["app_response"], "the final answer");
+		assert_eq!(ev["stop_reason"], "end_turn");
+		assert_eq!(ev["session_id"], "sess-9");
+		assert_eq!(ev["user_name"], "phimmasone@straiker.ai");
+		assert_eq!(ev["model"], "claude-sonnet-4-5");
+	}
+
+	#[test]
+	fn stop_headers_use_the_native_contract_tag() {
+		let captured = CapturedRequest {
+			body: Bytes::from_static(b"{}"),
+			session: Some("s1".into()),
+			user: Some("u1".into()),
+			model: None,
+		};
+		let h = stop_headers(&guard(None), &HeaderMap::new(), &captured);
+		let get = |n: &str| h.iter().find(|(k, _)| *k == n).map(|(_, v)| v.as_str());
+		// Stop is a pre-formed hook event, so it must NOT use the central-parse tag.
+		assert_eq!(get("x-tool"), Some(STOP_X_TOOL));
+		assert_ne!(get("x-tool"), Some(DEFAULT_X_TOOL));
+		assert_eq!(get("x-claude-code-session-id"), Some("s1"));
+		assert_eq!(get("x-straiker-user"), Some("u1"));
+		assert_eq!(get("x-straiker-model"), None);
 	}
 
 	#[test]
