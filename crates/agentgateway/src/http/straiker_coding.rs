@@ -299,6 +299,17 @@ impl StraikerCodingRequest {
 		// The client still receives the original, untouched bytes.
 		let decoded = decoded_body(&bytes, resp.headers()).await;
 
+		// Instrumentation: every one of these facts was individually verified against real captured
+		// bytes, yet no Stop reached the Console — so log the actual branch inputs rather than guess.
+		tracing::info!(
+			raw_len = bytes.len(),
+			decoded_len = decoded.len(),
+			has_tool = contains_tool_use(&decoded),
+			has_captured = self.captured.is_some(),
+			has_answer = answer_text(&decoded).is_some(),
+			"straiker coding: response phase"
+		);
+
 		// Only enforce on tool-call responses (substring check mirrors the sidecar).
 		if !contains_tool_use(&decoded) {
 			// Pure-text final answer: post an explicit `Stop` hook event carrying the assistant reply so
@@ -311,8 +322,11 @@ impl StraikerCodingRequest {
 			{
 				let headers = stop_headers(&self.guard, resp.headers(), captured);
 				let payload = stop_event_json(&answer, captured);
-				if let Err(e) = post(&self.client, &self.guard, headers, payload).await {
-					warn!(error = %e, phase = "straiker coding stop", "straiker coding stop post failed");
+				match post(&self.client, &self.guard, headers, payload).await {
+					Ok(_) => tracing::info!("straiker coding: stop posted"),
+					Err(e) => {
+						warn!(error = %e, phase = "straiker coding stop", "straiker coding stop post failed")
+					},
 				}
 			}
 			*resp.body_mut() = http::Body::from(bytes);
