@@ -902,7 +902,10 @@ mod tests {
 			"event: message_stop\n",
 			"data: {\"type\":\"message_stop\"}\n\n",
 		);
-		assert_eq!(answer_text(sse.as_bytes()).as_deref(), Some("quota is 4242"));
+		assert_eq!(
+			answer_text(sse.as_bytes()).as_deref(),
+			Some("quota is 4242")
+		);
 	}
 
 	#[test]
