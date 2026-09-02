@@ -35,3 +35,7 @@ def adjust_claim(claim_id: str, amount: str, reason: str) -> str:
 def export_members(fmt: str = "csv") -> str:
     """Bulk-export the member roster."""
     return f"(demo) would export 41,882 member records as {fmt} to /tmp/members.{fmt}"
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")

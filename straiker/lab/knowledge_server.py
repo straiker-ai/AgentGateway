@@ -31,3 +31,7 @@ def read_runbook(name: str) -> str:
 def get_oncall(team: str) -> str:
     """Who is on call for a team."""
     return f"team={team} primary=Dana Whitfield secondary=Marco Reyes escalation=+1-555-0142"
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
