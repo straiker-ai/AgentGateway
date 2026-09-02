@@ -137,6 +137,14 @@ routes:
         stdio:
           cmd: python3
           args: ["/srv/tasks_server.py"]
+      - name: claims
+        stdio:
+          cmd: python3
+          args: ["/srv/claims_server.py"]
+      - name: knowledge
+        stdio:
+          cmd: python3
+          args: ["/srv/knowledge_server.py"]
 
 # ---------------------------------------------------------------------------------
 # AGENTIC / CHATBOT surface: agentgateway's LLM API (/v1/chat/completions, /v1/responses) -> Straiker

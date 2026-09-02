@@ -22,6 +22,8 @@ COPY straiker_sidecar /srv/straiker_sidecar
 COPY gateway/config /srv/config
 COPY gateway/entrypoint.sh /entrypoint.sh
 COPY lab/tasks_server.py /srv/tasks_server.py
+COPY lab/claims_server.py /srv/claims_server.py
+COPY lab/knowledge_server.py /srv/knowledge_server.py
 RUN chmod +x /entrypoint.sh && useradd -r -u 10001 agw && chown -R agw:agw /srv
 USER agw
 # App Runner routes to ONE port; agentgateway's HTTP listener binds it. gRPC/HTTP sidecar = loopback only.
