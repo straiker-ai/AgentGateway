@@ -22,8 +22,10 @@
 //     tool_use response is replaced with a well-formed Anthropic text message.
 use agent_core::strng;
 use agent_core::strng::Strng;
+use async_compression::tokio::bufread::GzipDecoder;
 use bytes::Bytes;
 use serde::Deserialize;
+use tokio::io::{AsyncReadExt, BufReader};
 use tracing::warn;
 
 use crate::cel::RequestSnapshot;
@@ -290,20 +292,41 @@ impl StraikerCodingRequest {
 			},
 		};
 
+		// Upstream returns the body `content-encoding: gzip`, so every inspection below must run on the
+		// DECODED bytes: a raw byte scan never matches `tool_use` and a raw parse never yields the
+		// answer, which silently skipped BOTH the response-phase enforcement point and the Stop event
+		// (no error was logged because each was guarded by a check that simply came back false/None).
+		// The client still receives the original, untouched bytes.
+		let decoded = decoded_body(&bytes, resp.headers()).await;
+
+		// Instrumentation: every one of these facts was individually verified against real captured
+		// bytes, yet no Stop reached the Console — so log the actual branch inputs rather than guess.
+		tracing::info!(
+			raw_len = bytes.len(),
+			decoded_len = decoded.len(),
+			has_tool = contains_tool_use(&decoded),
+			has_captured = self.captured.is_some(),
+			has_answer = answer_text(&decoded).is_some(),
+			"straiker coding: response phase"
+		);
+
 		// Only enforce on tool-call responses (substring check mirrors the sidecar).
-		if !contains_tool_use(&bytes) {
+		if !contains_tool_use(&decoded) {
 			// Pure-text final answer: post an explicit `Stop` hook event carrying the assistant reply so
 			// the answer always lands in the Console as a Stop, completing the turn's trace
 			// (UserPromptSubmit -> PostToolUse -> PreToolUse -> Stop) at parity with the sidecar and the
 			// other gateway integrations. Stop is a trace event and never blocks, so a failure here is
 			// logged and the response is returned untouched.
 			if let Some(captured) = self.captured.as_ref()
-				&& let Some(answer) = answer_text(&bytes)
+				&& let Some(answer) = answer_text(&decoded)
 			{
 				let headers = stop_headers(&self.guard, resp.headers(), captured);
 				let payload = stop_event_json(&answer, captured);
-				if let Err(e) = post(&self.client, &self.guard, headers, payload).await {
-					warn!(error = %e, phase = "straiker coding stop", "straiker coding stop post failed");
+				match post(&self.client, &self.guard, headers, payload).await {
+					Ok(_) => tracing::info!("straiker coding: stop posted"),
+					Err(e) => {
+						warn!(error = %e, phase = "straiker coding stop", "straiker coding stop post failed")
+					},
 				}
 			}
 			*resp.body_mut() = http::Body::from(bytes);
@@ -315,7 +338,7 @@ impl StraikerCodingRequest {
 			return Ok(PolicyResponse::default());
 		};
 
-		let envelope = response_envelope(&bytes, captured);
+		let envelope = response_envelope(&decoded, captured);
 		let headers = detect_headers(
 			&self.guard,
 			Phase::ResponseSync,
@@ -430,14 +453,67 @@ fn stop_headers(
 	h
 }
 
+/// Upstream returns `/v1/messages` responses `content-encoding: gzip`, so every inspection the guard
+/// does must run on the DECODED bytes. Scanning the compressed body never matches `tool_use` and
+/// parsing it never yields the answer, which silently disabled both the response-phase enforcement
+/// point and the `Stop` event. Falls back to the raw bytes if decoding fails, so a decode problem
+/// degrades the guard rather than dropping the turn. The client always receives the original bytes.
+async fn decoded_body(bytes: &Bytes, headers: &::http::HeaderMap) -> Bytes {
+	let gzipped = headers
+		.get(::http::header::CONTENT_ENCODING)
+		.and_then(|v| v.to_str().ok())
+		.is_some_and(|v| v.to_ascii_lowercase().contains("gzip"))
+		|| bytes.starts_with(&[0x1f, 0x8b]);
+	if !gzipped {
+		return bytes.clone();
+	}
+	let mut decoder = GzipDecoder::new(BufReader::new(&bytes[..]));
+	let mut out = Vec::new();
+	match decoder.read_to_end(&mut out).await {
+		Ok(_) => Bytes::from(out),
+		Err(e) => {
+			warn!(error = %e, "straiker coding: response gunzip failed; inspecting raw bytes");
+			bytes.clone()
+		},
+	}
+}
+
 /// The assistant's final text answer from a buffered Anthropic `/v1/messages` response body.
 fn answer_text(body: &[u8]) -> Option<String> {
-	let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-	let content = v.get("content")?.as_array()?;
+	// Buffered JSON message: `content[]` blocks of type `text`.
+	if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body)
+		&& let Some(content) = v.get("content").and_then(|c| c.as_array())
+	{
+		let mut out = String::new();
+		for c in content {
+			if c.get("type").and_then(|t| t.as_str()) == Some("text")
+				&& let Some(t) = c.get("text").and_then(|t| t.as_str())
+			{
+				out.push_str(t);
+			}
+		}
+		if !out.is_empty() {
+			return Some(out);
+		}
+	}
+	// SSE stream — what Claude Code actually receives, since it sends `stream: true`. The answer
+	// arrives as `content_block_delta` frames and must be reassembled. Parsing only the buffered
+	// shape silently returned `None` on every real turn, so no `Stop` was ever posted.
+	let text = std::str::from_utf8(body).ok()?;
 	let mut out = String::new();
-	for c in content {
-		if c.get("type").and_then(|t| t.as_str()) == Some("text")
-			&& let Some(t) = c.get("text").and_then(|t| t.as_str())
+	for line in text.lines() {
+		let Some(payload) = line.trim().strip_prefix("data:") else {
+			continue;
+		};
+		let payload = payload.trim();
+		if payload.is_empty() || payload == "[DONE]" {
+			continue;
+		}
+		let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+			continue;
+		};
+		if v.get("type").and_then(|t| t.as_str()) == Some("content_block_delta")
+			&& let Some(t) = v.pointer("/delta/text").and_then(|t| t.as_str())
 		{
 			out.push_str(t);
 		}
@@ -792,6 +868,57 @@ mod tests {
 			&out[..],
 			original,
 			"monitor mode must not touch the response body"
+		);
+	}
+
+	#[tokio::test]
+	async fn gzipped_response_is_decoded_before_inspection() {
+		// Upstream gzips the response. Inspecting the compressed bytes silently found neither the
+		// tool call nor the answer, which disabled the enforcement point AND the Stop event with no
+		// error logged. Decoding first must recover both.
+		let plain: &[u8] =
+			br#"{"content":[{"type":"text","text":"final answer"},{"type":"tool_use","name":"Bash"}]}"#;
+		let mut enc = async_compression::tokio::bufread::GzipEncoder::new(BufReader::new(plain));
+		let mut gz = Vec::new();
+		enc.read_to_end(&mut gz).await.unwrap();
+		let gz = Bytes::from(gz);
+
+		// the bug: raw compressed bytes yield nothing
+		assert_eq!(answer_text(&gz), None, "raw gzip must not parse");
+		assert!(!contains_tool_use(&gz), "raw gzip must not match tool_use");
+
+		// the fix: decoded bytes recover both signals
+		let mut h = HeaderMap::new();
+		h.insert(
+			::http::header::CONTENT_ENCODING,
+			HeaderValue::from_static("gzip"),
+		);
+		let out = decoded_body(&gz, &h).await;
+		assert_eq!(answer_text(&out).as_deref(), Some("final answer"));
+		assert!(contains_tool_use(&out));
+
+		// an uncompressed body passes through untouched
+		let plain_b = Bytes::from_static(plain);
+		assert_eq!(decoded_body(&plain_b, &HeaderMap::new()).await, plain_b);
+	}
+
+	#[test]
+	fn answer_text_reassembles_sse_stream() {
+		// Claude Code sends `stream: true`, so a real turn's response is SSE, not a buffered message.
+		// Parsing only the buffered shape returned None on every live turn, so no Stop was ever posted.
+		let sse = concat!(
+			"event: message_start\n",
+			"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude\"}}\n\n",
+			"event: content_block_delta\n",
+			"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"quota is \"}}\n\n",
+			"event: content_block_delta\n",
+			"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"4242\"}}\n\n",
+			"event: message_stop\n",
+			"data: {\"type\":\"message_stop\"}\n\n",
+		);
+		assert_eq!(
+			answer_text(sse.as_bytes()).as_deref(),
+			Some("quota is 4242")
 		);
 	}
 
